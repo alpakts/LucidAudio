@@ -6,6 +6,9 @@ import {
   Activity,
   Check,
   Link2,
+  KeyRound,
+  Lock,
+  LockOpen,
   Maximize,
   Minimize,
   Mic,
@@ -29,6 +32,7 @@ import { DeviceMenu, useDevices } from "./Devices";
 export function Call({ code }: { code: string }) {
   const [room, setRoom] = useState<Room | null>(null);
   const [left, setLeft] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => () => room?.leave(), [room]);
 
@@ -51,8 +55,10 @@ export function Call({ code }: { code: string }) {
     return (
       <Lobby
         code={code}
-        onJoin={(name, stream, micOn) => {
-          const r = new Room(code, name);
+        notice={notice}
+        onJoin={(name, stream, micOn, key) => {
+          setNotice(null);
+          const r = new Room(code, name, key);
           setRoom(r);
           void r.join(stream, micOn);
         }}
@@ -67,6 +73,10 @@ export function Call({ code }: { code: string }) {
         setRoom(null);
         setLeft(true);
       }}
+      onDenied={(reason) => {
+        setRoom(null);
+        setNotice(reason === "sifre" ? "Şifre yanlış ya da değiştirildi." : "Oda kilitlendi, şu an yeni kimse giremiyor.");
+      }}
     />
   );
 }
@@ -79,8 +89,20 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 type ScreenSource = { key: string; name: string; stream: MediaStream; peer: RemoteView };
 
-function InCall({ room, onLeave }: { room: Room; onLeave: () => void }) {
+function InCall({
+  room,
+  onLeave,
+  onDenied,
+}: {
+  room: Room;
+  onLeave: () => void;
+  onDenied: (reason: "sifre" | "kilitli") => void;
+}) {
   useSyncExternalStore(room.subscribe, room.getVersion, room.getVersion);
+  const denied = room.denied;
+  useEffect(() => {
+    if (denied) onDenied(denied);
+  }, [denied, onDenied]);
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
   const [pinned, setPinned] = useState<string | null>(null);
@@ -260,9 +282,11 @@ function InCall({ room, onLeave }: { room: Room; onLeave: () => void }) {
         <span className="text-muted">/</span>
         <span className="font-mono text-sm truncate">{room.code}</span>
         <span className="text-xs text-muted ml-1 shrink-0">{remotes.length + 1} kişi</span>
+        <div className="ml-auto" />
+        <RoomLock room={room} />
         <button
           onClick={copy}
-          className="ml-auto h-9 px-3 rounded-lg bg-panel-2 border border-line text-sm flex items-center gap-2 shrink-0"
+          className="h-9 px-3 rounded-lg bg-panel-2 border border-line text-sm flex items-center gap-2 shrink-0"
         >
           {copied ? <Check className="size-4 text-accent" /> : <Link2 className="size-4" />}
           <span className="hidden sm:inline">{copied ? "Kopyalandı" : "Linki kopyala"}</span>
@@ -905,4 +929,121 @@ function usePip() {
   const pipClass = `z-10 ${CORNER[corner]} w-28 aspect-[3/4] sm:w-56 sm:aspect-video cursor-grab active:cursor-grabbing transition-[top,left,right,bottom,transform] duration-200`;
 
   return { areaRef, swapped, pipClass, pipProps };
+}
+
+// ---------- oda kilidi ve şifre ----------
+
+function RoomLock({ room }: { room: Room }) {
+  const [open, setOpen] = useState(false);
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const { locked, password } = room.room;
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: PointerEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", close);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    await fn();
+    setBusy(false);
+  };
+
+  return (
+    <div ref={box} className="relative shrink-0">
+      <button
+        onClick={() => setOpen(!open)}
+        aria-label="Oda güvenliği"
+        title={locked ? "Oda kilitli" : password ? "Oda şifreli" : "Oda güvenliği"}
+        className={`h-9 px-3 rounded-lg border text-sm flex items-center gap-2 ${
+          locked || password ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel-2 border-line"
+        }`}
+      >
+        {locked ? <Lock className="size-4" /> : password ? <KeyRound className="size-4" /> : <LockOpen className="size-4" />}
+        <span className="hidden sm:inline">{locked ? "Kilitli" : password ? "Şifreli" : "Güvenlik"}</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-11 z-30 w-[min(20rem,calc(100vw-1.5rem))] rounded-2xl border border-line bg-panel-2 shadow-2xl shadow-black/50 p-3 text-sm">
+          <button
+            disabled={busy}
+            onClick={() => run(() => room.setLock(!locked))}
+            className="w-full flex items-start gap-3 rounded-xl p-2 text-left hover:bg-white/5 disabled:opacity-60"
+          >
+            {locked ? <Lock className="size-4 mt-0.5 text-accent" /> : <LockOpen className="size-4 mt-0.5" />}
+            <span className="flex-1">
+              <span className="block">{locked ? "Kilidi aç" : "Odayı kilitle"}</span>
+              <span className="block text-xs text-muted mt-0.5">
+                {locked ? "Şu an yeni kimse giremiyor." : "İçeridekiler kalır, yeni kimse giremez. Herkes çıkınca kilit açılır."}
+              </span>
+            </span>
+          </button>
+
+          <div className="h-px bg-line my-2" />
+
+          {password ? (
+            <div className="p-2">
+              <p className="flex items-center gap-2">
+                <KeyRound className="size-4 text-accent" /> Şifre açık
+              </p>
+              <p className="text-xs text-muted mt-1">Yeni girenler şifreyi yazmak zorunda.</p>
+              <button
+                disabled={busy}
+                onClick={() => run(() => room.setPassword(null))}
+                className="mt-3 h-9 px-3 rounded-lg bg-panel border border-line text-xs disabled:opacity-60"
+              >
+                Şifreyi kaldır
+              </button>
+            </div>
+          ) : (
+            <form
+              className="p-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (pw.trim().length >= 4)
+                  void run(async () => {
+                    await room.setPassword(pw.trim());
+                    setPw("");
+                  });
+              }}
+            >
+              <label className="flex items-center gap-2" htmlFor="room-pw">
+                <KeyRound className="size-4" /> Şifre koy
+              </label>
+              <p className="text-xs text-muted mt-1">Linki bilen biri şifreyi de bilmeden giremez.</p>
+              <div className="flex gap-2 mt-3">
+                <input
+                  id="room-pw"
+                  type="password"
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  minLength={4}
+                  maxLength={100}
+                  placeholder="En az 4 karakter"
+                  autoComplete="new-password"
+                  className="flex-1 min-w-0 h-9 rounded-lg bg-panel border border-line px-3 outline-none focus:border-accent/60 placeholder:text-muted/60"
+                />
+                <button
+                  disabled={busy || pw.trim().length < 4}
+                  className="h-9 px-3 rounded-lg bg-accent text-accent-ink text-xs font-medium disabled:opacity-50"
+                >
+                  Koy
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

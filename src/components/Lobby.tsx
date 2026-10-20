@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
-import { Mic, MicOff, Smartphone, Video, VideoOff, Volume2 } from "lucide-react";
+import { KeyRound, Lock, Mic, MicOff, Smartphone, Video, VideoOff, Volume2 } from "lucide-react";
 import { canShareScreen } from "@/lib/room";
 import {
   acquireTrack,
@@ -39,14 +39,39 @@ async function permissionsGranted() {
 }
 
 // Meet'teki gibi: önizleme, üstünde mikrofon/kamera düğmeleri, altında cihaz seçimi.
+type Gate = { locked: boolean; password: boolean };
+
+async function roomApi(code: string, body: Record<string, unknown>) {
+  const res = await fetch(`/api/oda/${code}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 export function Lobby({
   code,
+  notice,
   onJoin,
 }: {
   code: string;
-  onJoin: (name: string, stream: MediaStream | null, micOn: boolean) => void;
+  notice?: string | null;
+  onJoin: (name: string, stream: MediaStream | null, micOn: boolean, key: string) => void;
 }) {
   const [name, setName] = useState(readName);
+  // Oda kilitli mi, şifreli mi: girmeden önce sorulur.
+  const [gate, setGate] = useState<Gate | null>(null);
+  const [key, setKey] = useState("");
+  const [gateError, setGateError] = useState<string | null>(notice ?? null);
+  const refreshGate = () =>
+    roomApi(code, { t: "info" })
+      .then((g: Gate) => setGate(g))
+      .catch(() => setGate({ locked: false, password: false }));
+  useEffect(() => {
+    void refreshGate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
   const [preview, setPreview] = useState<MediaStream | null>(null);
@@ -165,14 +190,28 @@ export function Lobby({
       localStorage.setItem(NAME_KEY, finalName);
     } catch {}
     let stream = previewRef.current;
-    // İzin henüz istenmediyse şimdi iste: Katıl'a dokunuşun hemen ardından.
+    // İzin henüz istenmediyse şimdi iste: Katıl'a dokunuşun hemen ardından (başka beklemeden önce).
     if (!stream && (mic || cam)) {
       const res = await askPermission();
       if (res.error) return;
       stream = res.stream;
     }
+    setGateError(null);
+    const g: Gate = await roomApi(code, { t: "info" }).catch(() => gate ?? { locked: false, password: false });
+    setGate(g);
+    if (g.locked) {
+      setGateError("Oda kilitli: içeriden biri kilidi açana kadar yeni kimse giremiyor.");
+      return;
+    }
+    if (g.password) {
+      const ok = key && (await roomApi(code, { t: "check", key }).then((r: { ok: boolean }) => r.ok).catch(() => false));
+      if (!ok) {
+        setGateError(key ? "Şifre yanlış." : "Bu oda şifreli, şifreyi yaz.");
+        return;
+      }
+    }
     handedOff.current = true;
-    onJoin(finalName, stream, mic);
+    onJoin(finalName, stream, mic, key);
   };
 
   const current = (kind: "mic" | "cam") => {
@@ -267,12 +306,43 @@ export function Lobby({
             className="w-full h-12 rounded-xl bg-panel border border-line px-4 outline-none focus:border-accent/60 placeholder:text-muted/60"
           />
 
+          {gate?.password && (
+            <>
+              <label className="flex items-center gap-2 text-sm text-muted mb-2 mt-4" htmlFor="key">
+                <KeyRound className="size-4" /> Oda şifresi
+              </label>
+              <input
+                id="key"
+                type="password"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                maxLength={100}
+                autoComplete="off"
+                className="w-full h-12 rounded-xl bg-panel border border-line px-4 outline-none focus:border-accent/60"
+              />
+            </>
+          )}
+
           <button
             disabled={busy}
             className="w-full h-12 mt-4 rounded-full bg-accent text-accent-ink font-medium hover:brightness-110 disabled:opacity-60 transition"
           >
             {busy ? "İzin bekleniyor…" : "Katıl"}
           </button>
+
+          {(gateError || gate?.locked) && (
+            <div role="alert" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100 flex gap-2">
+              <Lock className="size-4 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p>{gateError ?? "Oda kilitli: içeriden biri kilidi açana kadar yeni kimse giremiyor."}</p>
+                {gate?.locked && (
+                  <button type="button" onClick={() => void refreshGate()} className="mt-2 text-xs underline underline-offset-2">
+                    Tekrar kontrol et
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {error && (
             <div role="alert" className="mt-4 rounded-xl border border-danger/30 bg-danger/10 p-3 text-sm text-red-200">

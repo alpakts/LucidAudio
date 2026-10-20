@@ -111,9 +111,14 @@ export class Room {
   private version = 0;
   private failures = 0;
 
+  // Oda ayarları (sunucudan her yoklamada gelir) ve girişin reddedilme sebebi.
+  room: { locked: boolean; password: boolean } = { locked: false, password: false };
+  denied: "sifre" | "kilitli" | null = null;
+
   constructor(
     readonly code: string,
     name: string,
+    private readonly key = "",
   ) {
     this.state = { name, mic: false, cam: false, camStream: this.camStream.id, screenStream: null, screenMode: null };
   }
@@ -208,8 +213,28 @@ export class Room {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ me: this.me, ...body }),
     });
-    if (!res.ok) throw new Error(`sinyal ${res.status}`);
-    return res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(`sinyal ${res.status}`), { status: res.status, data });
+    return data;
+  }
+
+  async setLock(locked: boolean) {
+    await this.configure({ locked });
+  }
+
+  async setPassword(password: string | null) {
+    await this.configure({ password });
+  }
+
+  private async configure(change: { locked?: boolean; password?: string | null }) {
+    try {
+      const res = (await this.api({ t: "config", ...change })) as { room: Room["room"] };
+      this.room = res.room;
+    } catch (e) {
+      const data = (e as { data?: { error?: string } }).data;
+      this.mediaError = `Oda ayarı değiştirilemedi${data?.error ? `: ${data.error}` : ""}`;
+    }
+    this.emit();
   }
 
   // Gönderimleri sıraya koy: açıklama, ondan sonra üretilen ICE adaylarından önce ulaşsın.
@@ -221,12 +246,17 @@ export class Room {
     if (!this.running) return;
     try {
       const after = this.after === null ? null : Math.max(0, this.after - 50);
-      const res = (await this.api({ t: "poll", name: this.state.name, after })) as {
+      const res = (await this.api({ t: "poll", name: this.state.name, after, key: this.key })) as {
         peers: { id: string; name: string }[];
         msgs: { id: number; from: string; body: Body }[];
         last: number | null;
+        room: Room["room"];
       };
       if (!this.running) return;
+      if (res.room.locked !== this.room.locked || res.room.password !== this.room.password) {
+        this.room = res.room;
+        this.emit();
+      }
       this.failures = 0;
       if (this.netError) {
         this.netError = null;
@@ -242,6 +272,15 @@ export class Room {
       }
       if (this.seen.size > 2000) this.seen = new Set([...this.seen].slice(-500));
     } catch (e) {
+      const denied = (e as { data?: { denied?: string } }).data?.denied;
+      if (denied === "uye") {
+        // Kaydımız silinmiş (uzun kopukluk): baştan katıl.
+        this.after = null;
+      } else if (denied === "sifre" || denied === "kilitli") {
+        this.denied = denied;
+        this.leave();
+        return;
+      }
       console.warn(e);
       if (++this.failures >= 3 && !this.netError) {
         this.netError = "Sunucuya ulaşılamıyor, yeniden deneniyor…";
