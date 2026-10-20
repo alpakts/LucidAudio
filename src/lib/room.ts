@@ -6,6 +6,7 @@ import { acquireTrack, loadDevicePrefs, mediaErrorText, saveDevicePrefs, type De
 import { createMicChain, type InputMode, type MicChain, type NoiseMode } from "./noise";
 import { Ink, type InkMsg } from "./ink";
 import { WatchParty, type PartyMsg } from "./party";
+import { playSound, type SoundKind } from "./sounds";
 import { createBlurChain, type BlurChain, type BlurMode } from "./blur";
 
 export type ShareMode = "detail" | "motion";
@@ -239,6 +240,7 @@ export class Room {
   leave() {
     if (!this.running) return;
     this.running = false;
+    if (this.joined && !this.denied) this.sound("leave");
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.speakTimer) clearInterval(this.speakTimer);
@@ -327,7 +329,13 @@ export class Room {
         this.emit();
       }
       if (res.last !== null) this.after = this.floor = res.last;
+      const firstPoll = !this.joined;
       this.syncPeers(res.peers);
+      if (firstPoll) {
+        // İlk yoklamada gelenler zaten odadaydı: onlar için değil, kendin için bir giriş sesi.
+        this.joined = true;
+        this.sound("join");
+      }
       for (const m of res.msgs) {
         if (m.id <= this.floor || this.seen.has(m.id)) continue;
         this.seen.add(m.id);
@@ -418,6 +426,24 @@ export class Room {
     }
   }
 
+  // ---------- giriş/çıkış sesleri (Discord gibi) ----------
+
+  private joined = false;
+
+  get soundsOn() {
+    return this.devices.sounds ?? true;
+  }
+
+  setSounds(on: boolean) {
+    this.devices = { ...this.devices, sounds: on };
+    saveDevicePrefs(this.devices);
+    this.emit();
+  }
+
+  private sound(kind: SoundKind) {
+    playSound(kind, { enabled: this.soundsOn, sinkId: this.devices.speaker });
+  }
+
   // ---------- bağlantılar ----------
 
   private createRemote(id: string, name: string): Remote {
@@ -441,6 +467,7 @@ export class Room {
       incoming: null,
     };
     this.remotes.set(id, r);
+    if (this.joined) this.sound("join");
 
     pc.onnegotiationneeded = async () => {
       try {
@@ -497,6 +524,7 @@ export class Room {
     if (!r) return;
     r.pc.close();
     this.remotes.delete(id);
+    if (this.running) this.sound("leave");
     this.watchers.delete(id);
     this.watching.delete(id);
     this.failIncoming(r);

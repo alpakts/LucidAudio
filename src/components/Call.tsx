@@ -231,6 +231,15 @@ function InCall({
                   value: room.inputMode,
                   onSelect: (id: string) => void room.setInputMode(id as InputMode),
                 },
+                {
+                  title: "Bildirim sesleri",
+                  options: [
+                    { id: "on", label: "Biri girince/çıkınca ses çal" },
+                    { id: "off", label: "Sessiz" },
+                  ],
+                  value: room.soundsOn ? "on" : "off",
+                  onSelect: (id: string) => room.setSounds(id === "on"),
+                },
                 ...(speakers
                   ? [
                       {

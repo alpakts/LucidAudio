@@ -18,6 +18,7 @@ export type DevicePrefs = {
   input?: InputMode;
   gateDb?: number; // ses etkinliği eşiği (dBFS)
   blur?: BlurMode;
+  sounds?: boolean; // giriş/çıkış bildirim sesleri
 };
 const PREF_KEY = "pencere:devices";
 
