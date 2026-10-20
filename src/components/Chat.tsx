@@ -1,8 +1,9 @@
 "use client";
 
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Download, File as FileIcon, Paperclip, SendHorizontal, X } from "lucide-react";
+import { Download, File as FileIcon, Paperclip, Play, SendHorizontal, X } from "lucide-react";
 import type { ChatItem, Room } from "@/lib/room";
+import { parseYouTube } from "@/lib/party";
 
 function fmtSize(n: number) {
   if (n < 1024) return `${n} B`;
@@ -16,15 +17,27 @@ function fmtTime(at: number) {
 }
 
 // Metindeki http(s) bağlantılarını tıklanabilir yap; geri kalan düz metin (HTML olarak işlenmez).
-function Linkified({ text }: { text: string }) {
+// YouTube bağlantılarının yanında "Birlikte izle" düğmesi çıkar.
+function Linkified({ text, onWatch }: { text: string; onWatch: (url: string) => void }) {
   const parts = text.split(/(https?:\/\/[^\s<>"']+)/g);
   return (
     <>
       {parts.map((p, i) =>
         /^https?:\/\//.test(p) ? (
-          <a key={i} href={p} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 break-all">
-            {p}
-          </a>
+          <Fragment key={i}>
+            <a href={p} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 break-all">
+              {p}
+            </a>
+            {parseYouTube(p) && (
+              <button
+                type="button"
+                onClick={() => onWatch(p)}
+                className="ml-1.5 inline-flex items-center gap-1 align-middle h-6 px-2 rounded-full bg-red-600 text-white text-[11px] font-medium"
+              >
+                <Play className="size-3" /> Birlikte izle
+              </button>
+            )}
+          </Fragment>
         ) : (
           <Fragment key={i}>{p}</Fragment>
         ),
@@ -95,6 +108,23 @@ export function ChatPanel({ room, onClose }: { room: Room; onClose: () => void }
     if (el) el.scrollTop = el.scrollHeight;
   }, [items.length]);
 
+  const [ytOpen, setYtOpen] = useState(false);
+  const [ytUrl, setYtUrl] = useState("");
+  const [ytError, setYtError] = useState<string | null>(null);
+  // YouTube'u herkesle birlikte başlat.
+  const watch = (url: string) => {
+    const v = parseYouTube(url);
+    if (!v) {
+      setYtError("Bu bir YouTube bağlantısı değil.");
+      return false;
+    }
+    room.party.start(v.id, v.start);
+    setYtError(null);
+    setYtOpen(false);
+    setYtUrl("");
+    return true;
+  };
+
   const send = () => {
     if (!text.trim()) return;
     room.sendText(text);
@@ -122,10 +152,45 @@ export function ChatPanel({ room, onClose }: { room: Room; onClose: () => void }
     >
       <header className="h-12 shrink-0 px-4 flex items-center border-b border-line pt-[env(safe-area-inset-top)] box-content">
         <p className="font-medium text-sm">Sohbet</p>
-        <button onClick={onClose} aria-label="Sohbeti kapat" className="ml-auto size-9 -mr-2 rounded-lg grid place-items-center hover:bg-white/5">
+        <button
+          onClick={() => setYtOpen(!ytOpen)}
+          disabled={!ready}
+          title="Bir YouTube videosunu herkesle aynı anda izle"
+          className="ml-auto h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-medium flex items-center gap-1.5 disabled:opacity-40"
+        >
+          <Play className="size-3.5" /> Birlikte izle
+        </button>
+        <button onClick={onClose} aria-label="Sohbeti kapat" className="ml-1 size-9 -mr-2 rounded-lg grid place-items-center hover:bg-white/5">
           <X className="size-4" />
         </button>
       </header>
+
+      {ytOpen && (
+        <form
+          className="shrink-0 p-3 border-b border-line"
+          onSubmit={(e) => {
+            e.preventDefault();
+            watch(ytUrl);
+          }}
+        >
+          <p className="text-xs text-muted mb-2">
+            Video herkesin cihazında YouTube&apos;dan oynar; oynatma, durdurma ve sarma herkeste aynı olur.
+          </p>
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              value={ytUrl}
+              onChange={(e) => setYtUrl(e.target.value)}
+              placeholder="YouTube bağlantısı"
+              className="flex-1 min-w-0 h-9 rounded-lg bg-panel-2 border border-line px-3 text-sm outline-none focus:border-accent/60 placeholder:text-muted/60"
+            />
+            <button disabled={!ytUrl.trim()} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium disabled:opacity-40">
+              Başlat
+            </button>
+          </div>
+          {ytError && <p className="text-xs text-red-300 mt-2">{ytError}</p>}
+        </form>
+      )}
 
       <div ref={list} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2.5">
         {items.length === 0 && (
@@ -144,7 +209,7 @@ export function ChatPanel({ room, onClose }: { room: Room; onClose: () => void }
                   mine ? "bg-accent text-accent-ink rounded-br-md" : "bg-panel-2 border border-line rounded-bl-md"
                 }`}
               >
-                {m.file ? <FileCard item={m} mine={mine} /> : <Linkified text={m.text ?? ""} />}
+                {m.file ? <FileCard item={m} mine={mine} /> : <Linkified text={m.text ?? ""} onWatch={watch} />}
                 <span className={`block text-[10px] mt-1 text-right ${mine ? "text-accent-ink/60" : "text-muted"}`}>
                   {fmtTime(m.at)}
                 </span>

@@ -34,6 +34,7 @@ import type { BlurMode } from "@/lib/blur";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
+import { YouTubeStage } from "./YouTube";
 import { InkLayer, openInkWindow, SelfInkWindow } from "./Ink";
 import type { Ink } from "@/lib/ink";
 import { DeviceMenu, useDevices } from "./Devices";
@@ -104,6 +105,7 @@ type ScreenSource = {
   watching: boolean;
   peer: RemoteView | null; // kendi yayınında null
   self?: boolean;
+  yt?: boolean; // birlikte izlenen YouTube
 };
 
 function InCall({
@@ -175,6 +177,8 @@ function InCall({
   // Başkasının yayını varsa varsayılan olarak o öne çıkar.
   if (room.screenStream)
     screens.push({ key: room.me, name: "Sen", stream: room.screenStream, watching: true, peer: null, self: true });
+  // Birlikte izlenen YouTube sahnede en önde.
+  if (room.party.state) screens.unshift({ key: "yt", name: "YouTube", stream: null, watching: true, peer: null, yt: true });
   const active = screens.find((s) => s.key === pinned) ?? screens[0] ?? null;
 
   const copy = async () => {
@@ -460,7 +464,7 @@ function InCall({
                         s.key === active.key ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel border-line"
                       }`}
                     >
-                      {s.self ? "Senin yayının" : `${s.name} ekranı${s.watching ? "" : " · izlemiyorsun"}`}
+                      {s.yt ? "YouTube" : s.self ? "Senin yayının" : `${s.name} ekranı${s.watching ? "" : " · izlemiyorsun"}`}
                     </button>
                   ))}
                 </div>
@@ -468,7 +472,9 @@ function InCall({
               <div className="relative flex-1 min-h-0">
                 {/* Seçili olmayan ekranlar da DOM'da kalır ki sesleri kesilmesin. */}
                 {screens.map((s) =>
-                  s.watching && s.stream ? (
+                  s.yt ? (
+                    <YouTubeStage key="yt" party={room.party} hidden={s.key !== active.key} onStop={() => room.party.stop()} />
+                  ) : s.watching && s.stream ? (
                     <ScreenStage
                       key={s.key}
                       source={{ ...s, stream: s.stream }}

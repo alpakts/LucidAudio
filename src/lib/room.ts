@@ -5,6 +5,7 @@
 import { acquireTrack, loadDevicePrefs, mediaErrorText, saveDevicePrefs, type DevicePrefs } from "./devices";
 import { createMicChain, type InputMode, type MicChain, type NoiseMode } from "./noise";
 import { Ink, type InkMsg } from "./ink";
+import { WatchParty, type PartyMsg } from "./party";
 import { createBlurChain, type BlurChain, type BlurMode } from "./blur";
 
 export type ShareMode = "detail" | "motion";
@@ -155,6 +156,8 @@ export class Room {
   denied: "sifre" | "kilitli" | null = null;
   // Paylaşılan ekranlar üzerine çizim (veri kanalından).
   readonly ink: Ink;
+  // Senkron YouTube (veri kanalından).
+  readonly party: WatchParty;
 
   constructor(
     readonly code: string,
@@ -165,6 +168,14 @@ export class Room {
       this.me,
       () => this.state.name,
       (m) => this.broadcastData(m),
+      () => this.emit(),
+    );
+    this.party = new WatchParty(
+      this.me,
+      () => this.state.name,
+      (m) => this.broadcastData(m),
+      () => [...this.remotes.keys()],
+      (id) => (this.remotes.get(id)?.stats?.rttMs ?? 120) / 2000,
       () => this.emit(),
     );
     this.state = { name, mic: false, cam: false, camStream: this.camStream.id, screenStream: null, screenMode: null };
@@ -231,6 +242,7 @@ export class Room {
     if (this.pollTimer) clearTimeout(this.pollTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.speakTimer) clearInterval(this.speakTimer);
+    this.party.dispose();
     this.selfMeter?.ctx.close().catch(() => {});
     this.selfMeter = null;
     window.removeEventListener("pagehide", this.onPageHide);
@@ -463,7 +475,12 @@ export class Room {
     };
     r.dc.binaryType = "arraybuffer";
     r.dc.bufferedAmountLowThreshold = 1024 * 1024;
-    r.dc.onopen = () => this.emit();
+    r.dc.onopen = () => {
+      // Birlikte izleme sürüyorsa yeni bağlanana durumu yolla; yoksa ondan iste.
+      const st = this.party.stateFor();
+      r.dc.send(JSON.stringify(st ?? { t: "yt", a: "ask" }));
+      this.emit();
+    };
     r.dc.onclose = () => this.emit();
     r.dc.onmessage = (e) => this.onData(r, e.data as string | ArrayBuffer);
 
@@ -1163,6 +1180,8 @@ export class Room {
       const item = this.chat.find((c) => c.id === inc.id);
       const blob = new Blob(inc.chunks, { type: item?.file?.mime || "application/octet-stream" });
       this.updateFile(inc.id, { url: URL.createObjectURL(blob), progress: 1 });
+    } else if (msg.t === "yt") {
+      this.party.receive(r.id, msg as PartyMsg);
     } else if (msg.t === "ink" || msg.t === "ink-clear") {
       this.ink.receive(r.id, r.state.name, msg as InkMsg);
     } else {
