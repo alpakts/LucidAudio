@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { canShareScreen, Room, type PeerStats, type RemoteView, type ShareMode, type TrackStats } from "@/lib/room";
 import { sinkSupported } from "@/lib/devices";
-import type { NoiseMode } from "@/lib/noise";
+import type { InputMode, NoiseMode } from "@/lib/noise";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
@@ -113,6 +113,33 @@ function InCall({
   const [showStats, setShowStats] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
   const [inkOpen, setInkOpen] = useState(false);
+  const ptt = room.inputMode === "ptt" && room.gateActive;
+
+  // Bas-konuş: Boşluk tuşu (yazı alanındayken değil).
+  useEffect(() => {
+    if (!ptt) return;
+    const typing = (t: EventTarget | null) =>
+      t instanceof HTMLElement && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName));
+    const down = (e: KeyboardEvent) => {
+      if (e.code !== "Space" || typing(e.target)) return;
+      e.preventDefault();
+      if (!e.repeat) room.setPtt(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      room.setPtt(false);
+    };
+    const release = () => room.setPtt(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", release);
+      room.setPtt(false);
+    };
+  }, [ptt, room]);
   const [pinned, setPinned] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const share = useMemo(() => canShareScreen(), []);
@@ -144,6 +171,7 @@ function InCall({
           menu={
             <DeviceMenu
               label="Ses ayarları"
+              footer={room.inputMode === "gate" && room.gateActive ? <GateSlider room={room} /> : undefined}
               sections={[
                 {
                   title: "Mikrofon",
@@ -162,6 +190,18 @@ function InCall({
                   ],
                   value: room.noiseMode,
                   onSelect: (id: string) => void room.setNoise(id as NoiseMode),
+                },
+                {
+                  title: room.inputMode !== "always" && !room.gateActive && room.state.mic
+                    ? "Giriş modu (bu tarayıcıda çalışmadı, mikrofon hep açık)"
+                    : "Giriş modu",
+                  options: [
+                    { id: "always", label: "Her zaman açık" },
+                    { id: "gate", label: "Ses etkinliği: sadece konuşunca" },
+                    { id: "ptt", label: "Bas-konuş: Boşluk tuşu" },
+                  ],
+                  value: room.inputMode,
+                  onSelect: (id: string) => void room.setInputMode(id as InputMode),
                 },
                 ...(speakers
                   ? [
@@ -295,6 +335,24 @@ function InCall({
     <div ref={rootRef} className="h-dvh flex flex-col bg-bg">
       {focused && <FocusView key={focus} {...focused} ink={room.ink} controls={controls} onExit={exitFocus} />}
       {chatOpen && <ChatPanel room={room} onClose={() => setChatOpen(false)} />}
+      {ptt && room.state.mic && (
+        <button
+          onPointerDown={(e) => {
+            e.currentTarget.setPointerCapture(e.pointerId);
+            room.setPtt(true);
+          }}
+          onPointerUp={() => room.setPtt(false)}
+          onPointerCancel={() => room.setPtt(false)}
+          onContextMenu={(e) => e.preventDefault()}
+          className={`fixed z-30 left-1/2 -translate-x-1/2 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] h-12 px-6 rounded-full border text-sm font-medium select-none touch-none transition ${
+            room.pttHeld
+              ? "bg-[#23a55a] border-[#23a55a] text-white shadow-[0_0_24px_rgba(35,165,90,0.6)]"
+              : "bg-panel-2/95 border-line backdrop-blur"
+          }`}
+        >
+          {room.pttHeld ? "Konuşuyorsun" : "Basılı tut, konuş (Boşluk)"}
+        </button>
+      )}
       <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-line">
         <Link href="/" className="text-sm font-semibold tracking-tight">
           Pencere
@@ -1148,6 +1206,49 @@ function RoomLock({ room }: { room: Room }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// Ses etkinliği hassasiyeti: canlı seviye çubuğu + eşik kaydırıcısı (Discord'daki gibi).
+function GateSlider({ room }: { room: Room }) {
+  const [level, setLevel] = useState(-100);
+  useEffect(() => {
+    let raf = 0;
+    let last = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (now - last < 50) return;
+      last = now;
+      setLevel(room.micLevelDb());
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [room]);
+  const min = -90;
+  const max = -10;
+  const pct = (v: number) => `${Math.min(100, Math.max(0, ((v - min) / (max - min)) * 100))}%`;
+  const open = level > room.gateDb;
+  return (
+    <div className="px-3 pt-2 pb-3 mt-1 border-t border-line">
+      <p className="text-[11px] uppercase tracking-wide text-muted pb-2">Hassasiyet</p>
+      <div className="relative h-2 rounded-full bg-black/40 overflow-hidden">
+        <div className={`h-full transition-[width] duration-75 ${open ? "bg-[#23a55a]" : "bg-muted/60"}`} style={{ width: pct(level) }} />
+        <div className="absolute top-0 bottom-0 w-0.5 bg-white" style={{ left: pct(room.gateDb) }} />
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={1}
+        value={room.gateDb}
+        onChange={(e) => room.setGateDb(Number(e.target.value))}
+        aria-label="Ses etkinliği eşiği"
+        className="w-full mt-2 accent-[#7cc4ff]"
+      />
+      <p className="text-[11px] text-muted leading-relaxed">
+        Konuşunca çubuk yeşile dönmeli, sessizken gri kalmalı. Beyaz çizgiyi ona göre kaydır.
+      </p>
     </div>
   );
 }

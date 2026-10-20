@@ -1,6 +1,6 @@
 // Kamera, mikrofon ve hoparlör: kısıtlar, seçim tercihleri, hata metinleri.
 
-import type { NoiseMode } from "./noise";
+import type { InputMode, NoiseMode } from "./noise";
 
 // Güçlü modda tarayıcının kendi gürültü engellemesi kapalı: RNNoise ile üst üste binince ses boğuklaşıyor.
 // Kapalı modda otomatik ses seviyesi de kapanır (müzik, enstrüman için).
@@ -9,7 +9,14 @@ function micConstraints(noise: NoiseMode): MediaTrackConstraints {
 }
 const CAM: MediaTrackConstraints = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
 
-export type DevicePrefs = { mic?: string; cam?: string; speaker?: string; noise?: NoiseMode };
+export type DevicePrefs = {
+  mic?: string;
+  cam?: string;
+  speaker?: string;
+  noise?: NoiseMode;
+  input?: InputMode;
+  gateDb?: number; // ses etkinliği eşiği (dBFS)
+};
 const PREF_KEY = "pencere:devices";
 
 export function loadDevicePrefs(): DevicePrefs {

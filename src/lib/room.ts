@@ -3,7 +3,7 @@
 // Çakışan teklifler "perfect negotiation" kalıbıyla çözülür.
 
 import { acquireTrack, loadDevicePrefs, mediaErrorText, saveDevicePrefs, type DevicePrefs } from "./devices";
-import { suppressNoise, type NoiseMode } from "./noise";
+import { createMicChain, type InputMode, type MicChain, type NoiseMode } from "./noise";
 import { Ink, type InkMsg } from "./ink";
 
 export type ShareMode = "detail" | "motion";
@@ -235,8 +235,10 @@ export class Room {
     for (const item of this.chat) if (item.file?.url) URL.revokeObjectURL(item.file.url);
     this.remotes.clear();
     for (const t of this.camStream.getTracks()) t.stop();
-    this.micStop?.();
-    this.micStop = null;
+    if (this.gateTimer) clearInterval(this.gateTimer);
+    this.micChain?.stop();
+    this.micChain = null;
+    this.micRaw?.stop();
     for (const t of this.screenStream?.getTracks() ?? []) t.stop();
     this.emit();
   }
@@ -671,15 +673,37 @@ export class Room {
     this.broadcastState();
   }
 
-  // ---------- mikrofon hattı (gürültü engelleme) ----------
+  // ---------- mikrofon hattı (gürültü engelleme, ses etkinliği, bas-konuş) ----------
 
   private micRaw: MediaStreamTrack | null = null;
-  private micStop: (() => void) | null = null;
-  // Güçlü mod seçili ama bu tarayıcıda çalıştırılamadıysa false (ham ses gider).
+  private micChain: MicChain | null = null;
+  private gateTimer: ReturnType<typeof setInterval> | null = null;
+  private gateOpenUntil = 0;
+  private pttDown = false;
+  // Lucid seçili ama bu tarayıcıda çalıştırılamadıysa false (ham ses gider).
   noiseActive = false;
+  // Ses etkinliği / bas-konuş seçili ama ses hattı kurulamadıysa false (mikrofon hep açık gider).
+  gateActive = false;
 
   get noiseMode(): NoiseMode {
     return this.devices.noise ?? "strong";
+  }
+
+  get inputMode(): InputMode {
+    return this.devices.input ?? "always";
+  }
+
+  get gateDb(): number {
+    return this.devices.gateDb ?? -50;
+  }
+
+  get pttHeld() {
+    return this.pttDown;
+  }
+
+  // Hassasiyet çubuğundaki canlı gösterge için: kapıdan önceki seviye.
+  micLevelDb() {
+    return this.micChain?.levelDb() ?? -100;
   }
 
   async setNoise(mode: NoiseMode) {
@@ -695,8 +719,9 @@ export class Room {
       raw = await acquireTrack("audio", this.devices.mic);
     } catch {
       // Bazı telefonlar aynı mikrofonu iki kez açamıyor: eskisini bırakıp yeniden dene.
-      this.micStop?.();
-      this.micStop = null;
+      this.micChain?.stop();
+      this.micChain = null;
+      this.micRaw?.stop();
       try {
         raw = await acquireTrack("audio", this.devices.mic);
       } catch (e) {
@@ -710,27 +735,53 @@ export class Room {
     this.broadcastState();
   }
 
-  // Ham mikrofonu seçili gürültü ayarına göre işleyip gönderilen parça yapar ve eskisinin yerine koyar.
+  async setInputMode(mode: InputMode) {
+    this.devices = { ...this.devices, input: mode };
+    saveDevicePrefs(this.devices);
+    this.pttDown = false;
+    // Aynı ham mikrofonla hattı yeniden kur (kapı gerekiyorsa ses hattına alınır).
+    if (this.micRaw) await this.installMic(this.micRaw, this.state.mic);
+    this.emit();
+  }
+
+  setGateDb(db: number) {
+    this.devices = { ...this.devices, gateDb: Math.round(Math.min(-10, Math.max(-90, db))) };
+    saveDevicePrefs(this.devices);
+    this.emit();
+  }
+
+  setPtt(down: boolean) {
+    if (this.inputMode !== "ptt" || this.pttDown === down) return;
+    this.pttDown = down;
+    this.micChain?.setOpen(down);
+    this.emit();
+  }
+
+  // Ham mikrofonu seçili ayarlara göre işleyip gönderilen parça yapar ve eskisinin yerine koyar.
   // Göndericide replaceTrack kullanılır: bağlantı yeniden kurulmaz.
   private async installMic(raw: MediaStreamTrack, enabled: boolean) {
-    let out = raw;
-    let stop = () => raw.stop();
-    this.noiseActive = false;
-    if (this.noiseMode === "strong") {
+    const lucid = this.noiseMode === "strong";
+    const gated = this.inputMode !== "always";
+    let chain: MicChain | null = null;
+    if (lucid || gated) {
       try {
-        const clean = await suppressNoise(raw);
-        out = clean.track;
-        stop = clean.stop;
-        this.noiseActive = true;
+        chain = await createMicChain(raw, { lucid });
       } catch (e) {
-        console.warn("gürültü engelleme çalışmadı, ham ses gidiyor", e);
+        console.warn("ses hattı kurulamadı", e);
+        // Lucid yüklenemediyse kapı için en azından yalın hattı dene.
+        if (lucid && gated) chain = await createMicChain(raw, { lucid: false }).catch(() => null);
       }
     }
+    this.noiseActive = !!chain?.lucid;
+    this.gateActive = gated && !!chain;
+    const out = chain?.track ?? raw;
     out.enabled = enabled;
+
     const old = this.camStream.getAudioTracks()[0];
-    const oldStop = this.micStop;
+    const oldChain = this.micChain;
+    const oldRaw = this.micRaw;
     this.micRaw = raw;
-    this.micStop = stop;
+    this.micChain = chain;
     if (old) {
       this.camStream.removeTrack(old);
       this.camStream.addTrack(out);
@@ -741,8 +792,36 @@ export class Room {
       this.addTrackEverywhere(out, this.camStream);
       this.markCamSenders();
     }
-    if (oldStop) oldStop();
-    else old?.stop();
+    oldChain?.stop();
+    if (oldRaw && oldRaw !== raw) oldRaw.stop();
+    this.startGate();
+  }
+
+  private startGate() {
+    if (this.gateTimer) clearInterval(this.gateTimer);
+    this.gateTimer = null;
+    const chain = this.micChain;
+    if (!chain) return;
+    if (this.inputMode === "always") {
+      chain.setOpen(true);
+      return;
+    }
+    if (this.inputMode === "ptt") {
+      chain.setOpen(this.pttDown);
+      return;
+    }
+    // Ses etkinliği: eşiği geçince aç, sustuktan 300 ms sonra kapat.
+    chain.setOpen(false);
+    let open = false;
+    this.gateTimer = setInterval(() => {
+      const now = performance.now();
+      if (chain.levelDb() > this.gateDb) this.gateOpenUntil = now + 300;
+      const next = now < this.gateOpenUntil;
+      if (next !== open) {
+        open = next;
+        chain.setOpen(open);
+      }
+    }, 20);
   }
 
   private markCamSenders() {

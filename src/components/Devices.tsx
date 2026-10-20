@@ -128,9 +128,11 @@ export function DeviceSelect({
 export function DeviceMenu({
   sections,
   label,
+  footer,
 }: {
   label: string;
   sections: { title: string; options: DeviceOption[]; value: string; onSelect: (id: string) => void }[];
+  footer?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
@@ -186,6 +188,7 @@ export function DeviceMenu({
               })}
             </div>
           ))}
+          {footer}
         </div>
       )}
     </div>
