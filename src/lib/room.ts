@@ -53,7 +53,40 @@ type Remote = {
   missing: number;
   stats: PeerStats | null;
   prevBytes: Map<string, { bytes: number; at: number }>;
+  // Doğrudan veri kanalı: sohbet, dosya, çizim. Sunucuya uğramaz.
+  dc: RTCDataChannel;
+  sendQueue: Promise<void>;
+  incoming: { id: string; chunks: ArrayBuffer[]; received: number; lastEmit: number } | null;
 };
+
+export type ChatFile = {
+  name: string;
+  size: number;
+  mime: string;
+  url: string | null; // indirilebilir hale gelince
+  progress: number; // 0..1
+  failed?: boolean;
+};
+
+export type ChatItem = {
+  id: string;
+  from: string; // "self" ya da karşı tarafın kimliği
+  name: string;
+  at: number;
+  text?: string;
+  file?: ChatFile;
+};
+
+// Veri kanalı mesajları (JSON); dosya parçaları ikili (ArrayBuffer) gider.
+type Data =
+  | { t: "msg"; id: string; name: string; at: number; text: string }
+  | { t: "file"; id: string; name: string; at: number; file: string; size: number; mime: string }
+  | { t: "file-end"; id: string }
+  | { t: string; [k: string]: unknown };
+
+const CHUNK = 16 * 1024; // her tarayıcının kabul ettiği güvenli parça boyu
+const MAX_BUFFER = 4 * 1024 * 1024;
+export const MAX_FILE = 2 * 1024 * 1024 * 1024;
 
 const POLL_MS = 700;
 const SPEAK_POLL_MS = 120;
@@ -190,6 +223,7 @@ export class Room {
     this.signal("*", { k: "bye" });
     void this.sendChain.then(() => this.api({ t: "leave" }).catch(() => {}));
     for (const r of this.remotes.values()) r.pc.close();
+    for (const item of this.chat) if (item.file?.url) URL.revokeObjectURL(item.file.url);
     this.remotes.clear();
     for (const t of this.camStream.getTracks()) t.stop();
     this.micStop?.();
@@ -365,6 +399,10 @@ export class Room {
       missing: 0,
       stats: null,
       prevBytes: new Map(),
+      // Her iki taraf aynı kimlikle (0) açar: "ondatachannel" beklemeye gerek kalmaz.
+      dc: pc.createDataChannel("pencere", { negotiated: true, id: 0, ordered: true }),
+      sendQueue: Promise.resolve(),
+      incoming: null,
     };
     this.remotes.set(id, r);
 
@@ -399,6 +437,11 @@ export class Room {
     pc.onsignalingstatechange = () => {
       if (pc.signalingState === "stable") this.applyParams(r);
     };
+    r.dc.binaryType = "arraybuffer";
+    r.dc.bufferedAmountLowThreshold = 1024 * 1024;
+    r.dc.onopen = () => this.emit();
+    r.dc.onclose = () => this.emit();
+    r.dc.onmessage = (e) => this.onData(r, e.data as string | ArrayBuffer);
 
     for (const t of this.camStream.getTracks()) pc.addTrack(t, this.camStream);
     this.markCamSenders();
@@ -414,6 +457,7 @@ export class Room {
     if (!r) return;
     r.pc.close();
     this.remotes.delete(id);
+    this.failIncoming(r);
     this.applyAllParams();
     this.emit();
   }
@@ -774,6 +818,161 @@ export class Room {
       for (const sender of r.pc.getSenders()) if (sender.track && ids.has(sender.track.id)) r.pc.removeTrack(sender);
     this.state = { ...this.state, screenStream: null, screenMode: null };
     this.broadcastState();
+  }
+
+  // ---------- sohbet ve dosya (veri kanalı) ----------
+
+  chat: ChatItem[] = [];
+  unread = 0;
+  private chatVisible = false;
+  private dataListeners = new Set<(from: string, msg: Data) => void>();
+
+  // Çizim gibi başka özellikler de aynı kanalı kullanır.
+  listen(fn: (from: string, msg: Data) => void) {
+    this.dataListeners.add(fn);
+    return () => this.dataListeners.delete(fn);
+  }
+
+  broadcastData(msg: Data) {
+    const raw = JSON.stringify(msg);
+    for (const r of this.remotes.values()) if (r.dc.readyState === "open") r.dc.send(raw);
+  }
+
+  // Mesaj gidebilecek (kanalı açık) kişi var mı?
+  get chatReady() {
+    return [...this.remotes.values()].some((r) => r.dc.readyState === "open");
+  }
+
+  setChatVisible(visible: boolean) {
+    this.chatVisible = visible;
+    if (visible && this.unread) {
+      this.unread = 0;
+      this.emit();
+    }
+  }
+
+  sendText(text: string) {
+    const clean = text.trim().slice(0, 10_000);
+    if (!clean) return;
+    const item: ChatItem = { id: newId(), from: "self", name: this.state.name, at: Date.now(), text: clean };
+    this.chat = [...this.chat, item];
+    this.broadcastData({ t: "msg", id: item.id, name: item.name, at: item.at, text: clean });
+    this.emit();
+  }
+
+  sendFile(file: File) {
+    if (file.size > MAX_FILE) {
+      this.mediaError = `${file.name} çok büyük (en fazla 2 GB).`;
+      this.emit();
+      return;
+    }
+    const targets = [...this.remotes.values()].filter((r) => r.dc.readyState === "open");
+    const item: ChatItem = {
+      id: newId(),
+      from: "self",
+      name: this.state.name,
+      at: Date.now(),
+      file: { name: file.name, size: file.size, mime: file.type, url: URL.createObjectURL(file), progress: 0 },
+    };
+    this.chat = [...this.chat, item];
+    this.emit();
+    if (!targets.length) {
+      this.updateFile(item.id, { progress: 1 });
+      return;
+    }
+    const total = file.size * targets.length || 1;
+    const sent = new Map<string, number>();
+    const report = () => {
+      const done = [...sent.values()].reduce((a, b) => a + b, 0);
+      this.updateFile(item.id, { progress: Math.min(1, done / total) });
+    };
+    for (const r of targets) {
+      // Aynı kanalda dosyalar sırayla gider: parçalar karışmasın.
+      r.sendQueue = r.sendQueue.then(async () => {
+        try {
+          r.dc.send(
+            JSON.stringify({ t: "file", id: item.id, name: item.name, at: item.at, file: file.name, size: file.size, mime: file.type }),
+          );
+          for (let off = 0; off < file.size; off += CHUNK) {
+            if (r.dc.readyState !== "open") throw new Error("kanal kapandı");
+            if (r.dc.bufferedAmount > MAX_BUFFER)
+              await new Promise<void>((res) => r.dc.addEventListener("bufferedamountlow", () => res(), { once: true }));
+            r.dc.send(await file.slice(off, off + CHUNK).arrayBuffer());
+            sent.set(r.id, Math.min(file.size, off + CHUNK));
+            if ((off / CHUNK) % 64 === 0) report();
+          }
+          r.dc.send(JSON.stringify({ t: "file-end", id: item.id }));
+          sent.set(r.id, file.size);
+          report();
+        } catch (e) {
+          console.warn("dosya gönderilemedi", e);
+          this.updateFile(item.id, { failed: true });
+        }
+      });
+    }
+  }
+
+  private updateFile(id: string, change: Partial<ChatFile>) {
+    this.chat = this.chat.map((c) => (c.id === id && c.file ? { ...c, file: { ...c.file, ...change } } : c));
+    this.emit();
+  }
+
+  private addIncoming(item: ChatItem) {
+    this.chat = [...this.chat, item];
+    if (!this.chatVisible) this.unread++;
+    this.emit();
+  }
+
+  private failIncoming(r: Remote) {
+    if (r.incoming) this.updateFile(r.incoming.id, { failed: true });
+    r.incoming = null;
+  }
+
+  private onData(r: Remote, raw: string | ArrayBuffer) {
+    if (typeof raw !== "string") {
+      const inc = r.incoming;
+      if (!inc) return;
+      inc.chunks.push(raw);
+      inc.received += raw.byteLength;
+      const item = this.chat.find((c) => c.id === inc.id);
+      const size = item?.file?.size || 1;
+      const now = performance.now();
+      if (now - inc.lastEmit > 150) {
+        inc.lastEmit = now;
+        this.updateFile(inc.id, { progress: Math.min(1, inc.received / size) });
+      }
+      return;
+    }
+    let msg: Data;
+    try {
+      msg = JSON.parse(raw) as Data;
+    } catch {
+      return;
+    }
+    if (msg.t === "msg" && typeof msg.text === "string") {
+      const m = msg as Extract<Data, { t: "msg" }>;
+      this.addIncoming({ id: m.id, from: r.id, name: r.state.name || m.name, at: m.at, text: m.text.slice(0, 10_000) });
+    } else if (msg.t === "file") {
+      const m = msg as Extract<Data, { t: "file" }>;
+      this.failIncoming(r);
+      r.incoming = { id: m.id, chunks: [], received: 0, lastEmit: 0 };
+      this.addIncoming({
+        id: m.id,
+        from: r.id,
+        name: r.state.name || m.name,
+        at: m.at,
+        file: { name: String(m.file).slice(0, 200), size: Number(m.size) || 0, mime: String(m.mime || ""), url: null, progress: 0 },
+      });
+    } else if (msg.t === "file-end") {
+      const inc = r.incoming;
+      if (!inc || inc.id !== msg.id) return;
+      r.incoming = null;
+      const item = this.chat.find((c) => c.id === inc.id);
+      const blob = new Blob(inc.chunks, { type: item?.file?.mime || "application/octet-stream" });
+      this.updateFile(inc.id, { url: URL.createObjectURL(blob), progress: 1 });
+    } else {
+      for (const fn of this.dataListeners) fn(r.id, msg);
+    }
   }
 
   // ---------- konuşan kişi (Discord'daki yeşil ışık) ----------

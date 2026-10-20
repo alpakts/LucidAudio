@@ -10,6 +10,7 @@ import {
   Lock,
   LockOpen,
   Maximize,
+  MessageSquare,
   Minimize,
   Mic,
   MicOff,
@@ -27,6 +28,7 @@ import { sinkSupported } from "@/lib/devices";
 import type { NoiseMode } from "@/lib/noise";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
+import { ChatPanel } from "./Chat";
 import { DeviceMenu, useDevices } from "./Devices";
 
 export function Call({ code }: { code: string }) {
@@ -105,6 +107,7 @@ function InCall({
   }, [denied, onDenied]);
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
   const [pinned, setPinned] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const share = useMemo(() => canShareScreen(), []);
@@ -201,6 +204,16 @@ function InCall({
             {sharing ? <MonitorX className="size-5" /> : <MonitorUp className="size-5" />}
           </RoundButton>
         )}
+        <div className="relative">
+          <RoundButton active={!chatOpen} highlight={chatOpen} onClick={() => setChatOpen(!chatOpen)} label="Sohbet">
+            <MessageSquare className="size-5" />
+          </RoundButton>
+          {room.unread > 0 && !chatOpen && (
+            <span className="absolute -top-1 -right-1 min-w-5 h-5 px-1 rounded-full bg-accent text-accent-ink text-[11px] font-semibold grid place-items-center pointer-events-none">
+              {room.unread > 9 ? "9+" : room.unread}
+            </span>
+          )}
+        </div>
         <RoundButton active={!showStats} highlight={showStats} onClick={() => setShowStats(!showStats)} label="Bağlantı bilgisi">
           <Activity className="size-5" />
         </RoundButton>
@@ -275,6 +288,7 @@ function InCall({
   return (
     <div ref={rootRef} className="h-dvh flex flex-col bg-bg">
       {focused && <FocusView key={focus} {...focused} controls={controls} onExit={exitFocus} />}
+      {chatOpen && <ChatPanel room={room} onClose={() => setChatOpen(false)} />}
       <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-line">
         <Link href="/" className="text-sm font-semibold tracking-tight">
           Pencere
