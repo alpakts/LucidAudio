@@ -6,6 +6,8 @@ import {
   Activity,
   Check,
   Eraser,
+  Eye,
+  EyeOff,
   Link2,
   KeyRound,
   Lock,
@@ -94,7 +96,8 @@ function Centered({ children }: { children: React.ReactNode }) {
 
 // ---------- görüşme ----------
 
-type ScreenSource = { key: string; name: string; stream: MediaStream; peer: RemoteView };
+// stream yalnızca İzle'ye basıldıysa ve görüntü geldiyse dolu.
+type ScreenSource = { key: string; name: string; stream: MediaStream | null; watching: boolean; peer: RemoteView };
 
 function InCall({
   room,
@@ -149,8 +152,14 @@ function InCall({
   const speaker = room.devices.speaker;
 
   const screens: ScreenSource[] = remotes
-    .filter((r) => r.screen && r.screen.getVideoTracks().length > 0)
-    .map((r) => ({ key: r.id, name: r.state.name, stream: r.screen!, peer: r }));
+    .filter((r) => r.sharing)
+    .map((r) => ({
+      key: r.id,
+      name: r.state.name,
+      stream: r.screen && r.screen.getVideoTracks().length > 0 ? r.screen : null,
+      watching: r.watching,
+      peer: r,
+    }));
   const active = screens.find((s) => s.key === pinned) ?? screens[0] ?? null;
   const sharing = !!room.screenStream;
 
@@ -421,24 +430,36 @@ function InCall({
                         s.key === active.key ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel border-line"
                       }`}
                     >
-                      {s.name} ekranı
+                      {s.name} ekranı{s.watching ? "" : " · izlemiyorsun"}
                     </button>
                   ))}
                 </div>
               )}
               <div className="relative flex-1 min-h-0">
                 {/* Seçili olmayan ekranlar da DOM'da kalır ki sesleri kesilmesin. */}
-                {screens.map((s) => (
-                  <ScreenStage
-                    key={s.key}
-                    source={s}
-                    hidden={s.key !== active.key}
-                    stats={showStats ? s.peer.stats : null}
-                    sinkId={speaker}
-                    onFocus={() => enterFocus(`screen:${s.key}`)}
-                    ink={room.ink}
-                  />
-                ))}
+                {screens.map((s) =>
+                  s.watching && s.stream ? (
+                    <ScreenStage
+                      key={s.key}
+                      source={{ ...s, stream: s.stream }}
+                      hidden={s.key !== active.key}
+                      stats={showStats ? s.peer.stats : null}
+                      sinkId={speaker}
+                      onFocus={() => enterFocus(`screen:${s.key}`)}
+                      onStopWatching={() => room.watch(s.key, false)}
+                      ink={room.ink}
+                    />
+                  ) : (
+                    <ScreenInvite
+                      key={s.key}
+                      name={s.name}
+                      waiting={s.watching}
+                      hidden={s.key !== active.key}
+                      onWatch={() => room.watch(s.key, true)}
+                      onCancel={() => room.watch(s.key, false)}
+                    />
+                  ),
+                )}
               </div>
             </div>
             <div className="shrink-0 flex lg:flex-col gap-2 overflow-auto lg:w-64 h-28 sm:h-36 lg:h-auto [&>*]:shrink-0 [&>*]:aspect-video [&>*]:h-full lg:[&>*]:h-auto lg:[&>*]:w-full">
@@ -696,13 +717,15 @@ function ScreenStage({
   stats,
   sinkId,
   onFocus,
+  onStopWatching,
   ink,
 }: {
-  source: ScreenSource;
+  source: ScreenSource & { stream: MediaStream };
   hidden: boolean;
   stats: PeerStats | null;
   sinkId?: string;
   onFocus: () => void;
+  onStopWatching: () => void;
   ink: Ink;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -726,6 +749,14 @@ function ScreenStage({
         {source.name} ekranı
       </div>
       <div className="absolute right-2 bottom-2 flex gap-1.5">
+        <button
+          onClick={onStopWatching}
+          title="İzlemeyi bırak: görüntü sana gelmez, internetin ve işlemcin rahatlar"
+          className="h-9 px-2.5 rounded-lg bg-black/60 backdrop-blur flex items-center gap-1.5 text-xs opacity-80 hover:opacity-100"
+        >
+          <EyeOff className="size-4" />
+          <span className="hidden sm:inline">İzlemeyi bırak</span>
+        </button>
         <DrawButtons ink={ink} owner={source.key} drawing={drawing} onToggle={() => setDrawing(!drawing)} />
         <button
           onClick={onFocus}
@@ -738,6 +769,53 @@ function ScreenStage({
       </div>
       {stats && (
         <StatsBadge className="absolute right-2 top-2" lines={[t ? fmtTrack(t) : "görüntü bekleniyor", routeLine(stats)].filter(Boolean) as string[]} />
+      )}
+    </div>
+  );
+}
+
+// Biri ekran paylaşıyor ama izlemiyorsun: görüntü gelmez, İzle'ye basınca başlar (Discord gibi).
+function ScreenInvite({
+  name,
+  waiting,
+  hidden,
+  onWatch,
+  onCancel,
+}: {
+  name: string;
+  waiting: boolean;
+  hidden: boolean;
+  onWatch: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className={`absolute inset-0 rounded-2xl border border-line bg-panel flex flex-col items-center justify-center gap-4 p-6 text-center ${
+        hidden ? "invisible" : ""
+      }`}
+    >
+      <div className="size-14 rounded-2xl bg-accent/15 text-accent grid place-items-center">
+        <MonitorUp className="size-7" />
+      </div>
+      <div>
+        <p className="font-medium">{name} ekranını paylaşıyor</p>
+        <p className="text-xs text-muted mt-1">İzlemeye başlamadıkça görüntü sana gönderilmez.</p>
+      </div>
+      {waiting ? (
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-muted">Bağlanıyor…</span>
+          <button onClick={onCancel} className="h-9 px-3 rounded-lg bg-panel-2 border border-line text-xs">
+            Vazgeç
+          </button>
+        </div>
+      ) : (
+        <button
+          onClick={onWatch}
+          className="h-11 px-6 rounded-full bg-accent text-accent-ink font-medium flex items-center gap-2 hover:brightness-110"
+        >
+          <Eye className="size-5" />
+          Yayını izle
+        </button>
       )}
     </div>
   );
@@ -804,6 +882,10 @@ function SharingBar({
       <span className="flex items-center gap-2 text-accent">
         <span className="size-2 rounded-full bg-accent animate-pulse" />
         Ekranını paylaşıyorsun
+      </span>
+      <span className="text-xs text-muted flex items-center gap-1.5" title="Yalnızca İzle'ye basanlara gönderiliyor">
+        <Eye className="size-3.5" />
+        {room.watcherCount ? `${room.watcherCount} kişi izliyor` : "Henüz izleyen yok"}
       </span>
       <div className="flex rounded-lg border border-line overflow-hidden">
         {modes.map((m) => (
@@ -918,7 +1000,7 @@ function resolveFocus(focus: string | null, room: Room, remotes: RemoteView[], s
   const [kind, id] = focus.split(":");
   if (kind === "screen") {
     const s = screens.find((x) => x.key === id);
-    return s
+    return s?.stream
       ? { inkOwner: s.key, title: `${s.name} ekranı`, stream: s.stream, mirror: false, camOff: false, initial: "" }
       : null;
   }

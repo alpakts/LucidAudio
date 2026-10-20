@@ -33,6 +33,8 @@ export type RemoteView = {
   conn: RTCPeerConnectionState;
   cam: MediaStream | null;
   screen: MediaStream | null;
+  sharing: boolean; // ekran paylaşıyor mu (izlemesen de)
+  watching: boolean; // ben onun yayınını izliyor muyum
   stats: PeerStats | null;
 };
 
@@ -40,7 +42,9 @@ type Body =
   | { k: "desc"; d: RTCSessionDescriptionInit }
   | { k: "ice"; c: RTCIceCandidateInit | null }
   | { k: "state"; s: PeerState }
-  | { k: "bye" };
+  | { k: "bye" }
+  // İzleyen, paylaşana "yayınını bana gönder / gönderme" der.
+  | { k: "watch"; on: boolean };
 
 type Remote = {
   id: string;
@@ -184,7 +188,9 @@ export class Room {
       state: r.state,
       conn: r.pc.connectionState,
       cam: (r.state.camStream && r.streams.get(r.state.camStream)) || null,
-      screen: (r.state.screenStream && r.streams.get(r.state.screenStream)) || null,
+      screen: (this.watching.has(r.id) && r.state.screenStream && r.streams.get(r.state.screenStream)) || null,
+      sharing: !!r.state.screenStream,
+      watching: this.watching.has(r.id),
       stats: r.stats,
     }));
   }
@@ -362,9 +368,15 @@ export class Room {
     const pc = r.pc;
     if (pc.signalingState === "closed") return;
     if (body.k === "state") {
+      // Paylaşım bitti ya da yeni bir paylaşım başladı: izleme yeniden istenmeli.
+      if (body.s.screenStream !== r.state.screenStream) this.watching.delete(r.id);
       r.state = body.s;
       this.applyParams(r);
       this.emit();
+      return;
+    }
+    if (body.k === "watch") {
+      this.setWatcher(r, body.on);
       return;
     }
     if (body.k === "desc") {
@@ -457,7 +469,6 @@ export class Room {
 
     for (const t of this.camStream.getTracks()) pc.addTrack(t, this.camStream);
     this.markCamSenders();
-    for (const t of this.screenStream?.getTracks() ?? []) pc.addTrack(t, this.screenStream!);
     // Yeni gelen bizim durumumuzu bilmiyor.
     this.signal(id, { k: "state", s: this.state });
     this.emit();
@@ -469,6 +480,8 @@ export class Room {
     if (!r) return;
     r.pc.close();
     this.remotes.delete(id);
+    this.watchers.delete(id);
+    this.watching.delete(id);
     this.failIncoming(r);
     this.applyAllParams();
     this.emit();
@@ -479,10 +492,11 @@ export class Room {
   // Herkese ayrı yükleme yapıldığı için kişi sayısı arttıkça bit hızı paylaştırılır.
   private budget() {
     const n = Math.max(1, this.remotes.size);
+    const w = Math.max(1, this.watchers.size);
     // İki mod da 60 fps; hareketli içerik kare başına daha çok bit ister.
     const screen = this.screenMode === "motion" ? 10_000_000 : 6_000_000;
     return {
-      screen: n === 1 ? screen : Math.round(screen / Math.min(n, 2.5)),
+      screen: w === 1 ? screen : Math.round(screen / Math.min(w, 2.5)),
       cam: n === 1 ? 1_500_000 : 800_000,
       mic: 64_000,
       screenAudio: 160_000,
@@ -920,7 +934,8 @@ export class Room {
     // iki modda da "motion" verip farkı degradationPreference ile kuruyoruz (applyParams).
     v.contentHint = "motion";
     v.addEventListener("ended", () => this.stopScreen());
-    for (const t of s.getTracks()) this.addTrackEverywhere(t, s);
+    // Görüntü herkese değil, yalnızca İzle'ye basanlara gider (setWatcher).
+    this.watchers.clear();
     this.state = { ...this.state, screenStream: s.id, screenMode: mode };
     this.applyAllParams();
     this.broadcastState();
@@ -959,8 +974,43 @@ export class Room {
     for (const t of s.getTracks()) t.stop();
     for (const r of this.remotes.values())
       for (const sender of r.pc.getSenders()) if (sender.track && ids.has(sender.track.id)) r.pc.removeTrack(sender);
+    this.watchers.clear();
     this.state = { ...this.state, screenStream: null, screenMode: null };
     this.broadcastState();
+  }
+
+  // ---------- yayını izle / izlemeyi bırak (Discord gibi) ----------
+
+  // Benim ekranımı izleyenler.
+  private watchers = new Set<string>();
+  // Ekranını izlediğim kişiler.
+  private watching = new Set<string>();
+
+  get watcherCount() {
+    return this.watchers.size;
+  }
+
+  watch(id: string, on: boolean) {
+    if (!this.remotes.has(id)) return;
+    if (on) this.watching.add(id);
+    else this.watching.delete(id);
+    this.signal(id, { k: "watch", on });
+    this.emit();
+  }
+
+  private setWatcher(r: Remote, on: boolean) {
+    const s = this.screenStream;
+    if (on && s && !this.watchers.has(r.id)) {
+      this.watchers.add(r.id);
+      for (const t of s.getTracks()) r.pc.addTrack(t, s);
+    } else if (!on && this.watchers.has(r.id)) {
+      this.watchers.delete(r.id);
+      const ids = new Set(s?.getTracks().map((t) => t.id) ?? []);
+      for (const sender of r.pc.getSenders()) if (sender.track && ids.has(sender.track.id)) r.pc.removeTrack(sender);
+    } else return;
+    // İzleyen sayısı değişti: bit hızı yeniden paylaştırılır.
+    this.applyAllParams();
+    this.emit();
   }
 
   // ---------- sohbet ve dosya (veri kanalı) ----------
