@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Activity,
   Check,
+  Eraser,
   Link2,
   KeyRound,
   Lock,
@@ -16,6 +17,7 @@ import {
   MicOff,
   MonitorUp,
   MonitorX,
+  Pencil,
   PhoneOff,
   Video,
   VideoOff,
@@ -29,6 +31,8 @@ import type { NoiseMode } from "@/lib/noise";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
+import { InkLayer, SelfInkWindow } from "./Ink";
+import type { Ink } from "@/lib/ink";
 import { DeviceMenu, useDevices } from "./Devices";
 
 export function Call({ code }: { code: string }) {
@@ -108,6 +112,7 @@ function InCall({
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [inkOpen, setInkOpen] = useState(false);
   const [pinned, setPinned] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const share = useMemo(() => canShareScreen(), []);
@@ -249,6 +254,7 @@ function InCall({
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   };
   const focused = resolveFocus(focus, room, remotes, screens);
+  const closeInk = useCallback(() => setInkOpen(false), []);
 
   // İki kişide WhatsApp düzeni: karşı taraf büyük, kendi kameran köşede küçük; dokununca yer değişir.
   const one = !active && remotes.length === 1 ? remotes[0] : null;
@@ -287,7 +293,7 @@ function InCall({
 
   return (
     <div ref={rootRef} className="h-dvh flex flex-col bg-bg">
-      {focused && <FocusView key={focus} {...focused} controls={controls} onExit={exitFocus} />}
+      {focused && <FocusView key={focus} {...focused} ink={room.ink} controls={controls} onExit={exitFocus} />}
       {chatOpen && <ChatPanel room={room} onClose={() => setChatOpen(false)} />}
       <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-line">
         <Link href="/" className="text-sm font-semibold tracking-tight">
@@ -324,7 +330,12 @@ function InCall({
           room={room}
           showStats={showStats}
           stats={remotes.map((r) => ({ name: r.state.name, s: r.stats }))}
+          inkOpen={inkOpen}
+          onInk={() => setInkOpen(!inkOpen)}
         />
+      )}
+      {sharing && inkOpen && room.screenStream && (
+        <SelfInkWindow ink={room.ink} owner={room.me} stream={room.screenStream} onClose={closeInk} />
       )}
 
       <main className="flex-1 min-h-0 p-2 sm:p-3">
@@ -356,6 +367,7 @@ function InCall({
                     stats={showStats ? s.peer.stats : null}
                     sinkId={speaker}
                     onFocus={() => enterFocus(`screen:${s.key}`)}
+                    ink={room.ink}
                   />
                 ))}
               </div>
@@ -615,15 +627,18 @@ function ScreenStage({
   stats,
   sinkId,
   onFocus,
+  ink,
 }: {
   source: ScreenSource;
   hidden: boolean;
   stats: PeerStats | null;
   sinkId?: string;
   onFocus: () => void;
+  ink: Ink;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const [drawing, setDrawing] = useState(false);
   const t = stats?.inbound[source.stream.getVideoTracks()[0]?.id ?? ""];
 
   return (
@@ -636,18 +651,22 @@ function ScreenStage({
         className="absolute inset-0 size-full"
         onDoubleClick={onFocus}
       />
-      <div className="absolute left-2 top-2 h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5">
+      <InkLayer ink={ink} owner={source.key} videoRef={video} drawing={drawing} />
+      <div className="absolute left-2 top-2 h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5 pointer-events-none">
         <MonitorUp className="size-3.5 text-accent" />
         {source.name} ekranı
       </div>
-      <button
-        onClick={onFocus}
-        aria-label="Tam ekran"
-        title="Tam ekran (çift tıkla da olur)"
-        className="absolute right-2 bottom-2 size-9 rounded-lg bg-black/60 backdrop-blur grid place-items-center opacity-80 hover:opacity-100"
-      >
-        <Maximize className="size-4" />
-      </button>
+      <div className="absolute right-2 bottom-2 flex gap-1.5">
+        <DrawButtons ink={ink} owner={source.key} drawing={drawing} onToggle={() => setDrawing(!drawing)} />
+        <button
+          onClick={onFocus}
+          aria-label="Tam ekran"
+          title="Tam ekran (çift tıkla da olur)"
+          className="size-9 rounded-lg bg-black/60 backdrop-blur grid place-items-center opacity-80 hover:opacity-100"
+        >
+          <Maximize className="size-4" />
+        </button>
+      </div>
       {stats && (
         <StatsBadge className="absolute right-2 top-2" lines={[t ? fmtTrack(t) : "görüntü bekleniyor", routeLine(stats)].filter(Boolean) as string[]} />
       )}
@@ -655,15 +674,57 @@ function ScreenStage({
   );
 }
 
+function DrawButtons({ ink, owner, drawing, onToggle }: { ink: Ink; owner: string; drawing: boolean; onToggle: () => void }) {
+  return (
+    <>
+      {drawing && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            ink.clear(owner);
+          }}
+          aria-label="Çizimleri temizle"
+          title="Çizimleri temizle"
+          className="size-9 rounded-lg bg-black/60 backdrop-blur grid place-items-center opacity-80 hover:opacity-100"
+        >
+          <Eraser className="size-4" />
+        </button>
+      )}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggle();
+        }}
+        aria-label={drawing ? "Çizimi bitir" : "Ekrana çiz"}
+        aria-pressed={drawing}
+        title={drawing ? "Çizimi bitir" : "Ekrana çiz: karşı taraf görür, birkaç saniyede silinir"}
+        className={`h-9 px-2.5 rounded-lg backdrop-blur flex items-center gap-1.5 text-xs ${
+          drawing ? "text-accent-ink" : "bg-black/60 opacity-80 hover:opacity-100"
+        }`}
+        style={drawing ? { background: ink.myColor } : undefined}
+      >
+        <Pencil className="size-4" />
+        <span className="hidden sm:inline">{drawing ? "Çiziyorsun" : "Çiz"}</span>
+      </button>
+    </>
+  );
+}
+
 function SharingBar({
   room,
   showStats,
   stats,
+  inkOpen,
+  onInk,
 }: {
   room: Room;
   showStats: boolean;
   stats: { name: string; s: PeerStats | null }[];
+  inkOpen: boolean;
+  onInk: () => void;
 }) {
+  const notice = room.ink.notice;
+  const fresh = !!notice;
   const modes: { k: ShareMode; label: string; hint: string }[] = [
     { k: "detail", label: "Yazı", hint: "Kod, belge, site: 60 fps, internet daralırsa önce akıcılıktan kısar, yazı keskin kalır" },
     { k: "motion", label: "Hareket", hint: "Video, oyun: 60 fps, internet daralırsa önce çözünürlükten kısar, akıcılık korunur" },
@@ -687,6 +748,20 @@ function SharingBar({
           </button>
         ))}
       </div>
+      <button
+        onClick={onInk}
+        title="Karşı tarafın ekranına çizdiklerini her zaman üstte duran küçük bir pencerede gör"
+        className={`h-8 px-3 rounded-lg border text-xs flex items-center gap-1.5 ${
+          inkOpen
+            ? "bg-accent text-accent-ink border-accent"
+            : fresh
+              ? "bg-amber-400/20 border-amber-400/50 text-amber-100 animate-pulse"
+              : "bg-panel border-line hover:bg-panel-2"
+        }`}
+      >
+        <Pencil className="size-3.5" />
+        {inkOpen ? "Çizimler açık" : fresh ? `${notice!.name} ekranına çiziyor, göster` : "Çizimleri gör"}
+      </button>
       {audio && (
         <button
           onClick={() => room.setScreenAudio(!audio.on)}
@@ -761,6 +836,7 @@ function limitLabel(l: string) {
 // ---------- tam ekran (odak) ----------
 
 type Focused = {
+  inkOwner?: string;
   title: string;
   stream: MediaStream | null;
   mirror: boolean;
@@ -773,7 +849,9 @@ function resolveFocus(focus: string | null, room: Room, remotes: RemoteView[], s
   const [kind, id] = focus.split(":");
   if (kind === "screen") {
     const s = screens.find((x) => x.key === id);
-    return s ? { title: `${s.name} ekranı`, stream: s.stream, mirror: false, camOff: false, initial: "" } : null;
+    return s
+      ? { inkOwner: s.key, title: `${s.name} ekranı`, stream: s.stream, mirror: false, camOff: false, initial: "" }
+      : null;
   }
   if (id === "self")
     return {
@@ -791,6 +869,8 @@ function resolveFocus(focus: string | null, room: Room, remotes: RemoteView[], s
 const HIDE_MS = 3500;
 
 function FocusView({
+  inkOwner,
+  ink,
   title,
   stream,
   mirror,
@@ -798,8 +878,10 @@ function FocusView({
   initial,
   controls,
   onExit,
-}: Focused & { controls: React.ReactNode; onExit: () => void }) {
+}: Focused & { ink: Ink; controls: React.ReactNode; onExit: () => void }) {
   const [shown, setShown] = useState(true);
+  const [drawing, setDrawing] = useState(false);
+  const video = useRef<HTMLVideoElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const arm = () => {
@@ -822,7 +904,11 @@ function FocusView({
   return (
     <div
       className={`fixed inset-0 z-40 bg-black select-none ${shown ? "" : "cursor-none"}`}
-      onClick={() => (shown ? setShown(false) : poke())}
+      onClick={() => {
+        if (drawing) return;
+        if (shown) setShown(false);
+        else poke();
+      }}
       onPointerMove={(e) => e.pointerType === "mouse" && poke()}
     >
       {/* Ses alttaki kutulardan çalmaya devam eder; burada sessiz, yoksa iki kez duyulur. */}
@@ -832,8 +918,10 @@ function FocusView({
         muted
         mirror={mirror}
         fit="contain"
+        videoRef={video}
         className={`absolute inset-0 size-full ${camOff ? "opacity-0" : ""}`}
       />
+      {inkOwner && <InkLayer ink={ink} owner={inkOwner} videoRef={video} drawing={drawing} />}
       {camOff && (
         <div className="absolute inset-0 grid place-items-center">
           <div className="size-28 rounded-full bg-panel-2 border border-line grid place-items-center text-5xl font-medium text-muted">
@@ -848,11 +936,13 @@ function FocusView({
         onPointerDown={arm}
       >
         <span className="text-sm truncate">{title}</span>
+        <div className="ml-auto" />
+        {inkOwner && <DrawButtons ink={ink} owner={inkOwner} drawing={drawing} onToggle={() => setDrawing(!drawing)} />}
         <button
           onClick={onExit}
           aria-label="Tam ekrandan çık"
           title="Tam ekrandan çık (Esc)"
-          className="ml-auto size-10 shrink-0 rounded-full bg-black/50 border border-white/20 grid place-items-center hover:bg-black/70"
+          className="size-10 shrink-0 rounded-full bg-black/50 border border-white/20 grid place-items-center hover:bg-black/70"
         >
           <Minimize className="size-4" />
         </button>

@@ -4,6 +4,7 @@
 
 import { acquireTrack, loadDevicePrefs, mediaErrorText, saveDevicePrefs, type DevicePrefs } from "./devices";
 import { suppressNoise, type NoiseMode } from "./noise";
+import { Ink, type InkMsg } from "./ink";
 
 export type ShareMode = "detail" | "motion";
 
@@ -147,12 +148,20 @@ export class Room {
   // Oda ayarları (sunucudan her yoklamada gelir) ve girişin reddedilme sebebi.
   room: { locked: boolean; password: boolean } = { locked: false, password: false };
   denied: "sifre" | "kilitli" | null = null;
+  // Paylaşılan ekranlar üzerine çizim (veri kanalından).
+  readonly ink: Ink;
 
   constructor(
     readonly code: string,
     name: string,
     private readonly key = "",
   ) {
+    this.ink = new Ink(
+      this.me,
+      () => this.state.name,
+      (m) => this.broadcastData(m),
+      () => this.emit(),
+    );
     this.state = { name, mic: false, cam: false, camStream: this.camStream.id, screenStream: null, screenMode: null };
   }
 
@@ -970,6 +979,8 @@ export class Room {
       const item = this.chat.find((c) => c.id === inc.id);
       const blob = new Blob(inc.chunks, { type: item?.file?.mime || "application/octet-stream" });
       this.updateFile(inc.id, { url: URL.createObjectURL(blob), progress: 1 });
+    } else if (msg.t === "ink" || msg.t === "ink-clear") {
+      this.ink.receive(r.id, r.state.name, msg as InkMsg);
     } else {
       for (const fn of this.dataListeners) fn(r.id, msg);
     }
