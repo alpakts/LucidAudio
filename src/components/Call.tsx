@@ -14,6 +14,7 @@ import {
   LockOpen,
   Maximize,
   MessageSquare,
+  MonitorPlay,
   Minimize,
   Mic,
   MicOff,
@@ -35,6 +36,7 @@ import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
 import { YouTubeStage } from "./YouTube";
+import { YouTubePicker } from "./YouTubePicker";
 import { InkLayer, openInkWindow, SelfInkWindow } from "./Ink";
 import type { Ink } from "@/lib/ink";
 import { DeviceMenu, useDevices } from "./Devices";
@@ -125,6 +127,7 @@ function InCall({
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [ytOpen, setYtOpen] = useState(false);
   // Çizim önizlemesi: PiP penceresi, sayfa içi panel ("panel") ya da kapalı (null).
   const [inkWin, setInkWin] = useState<Window | "panel" | null>(null);
   // Paylaşım bitince PiP penceresi kapanır; kapanmış pencere kapalı sayılır.
@@ -297,7 +300,15 @@ function InCall({
           </RoundButton>
         )}
         <div className="relative">
-          <RoundButton active={!chatOpen} highlight={chatOpen} onClick={() => setChatOpen(!chatOpen)} label="Sohbet">
+          <RoundButton
+            active={!chatOpen}
+            highlight={chatOpen}
+            onClick={() => {
+              setChatOpen(!chatOpen);
+              setYtOpen(false);
+            }}
+            label="Sohbet"
+          >
             <MessageSquare className="size-5" />
           </RoundButton>
           {room.unread > 0 && !chatOpen && (
@@ -306,9 +317,19 @@ function InCall({
             </span>
           )}
         </div>
-        <RoundButton active={!showStats} highlight={showStats} onClick={() => setShowStats(!showStats)} label="Bağlantı bilgisi">
-          <Activity className="size-5" />
-        </RoundButton>
+        <button
+          onClick={() => {
+            setYtOpen(!ytOpen);
+            setChatOpen(false);
+          }}
+          aria-label="Birlikte izle"
+          title="YouTube'u birlikte izle"
+          className={`size-12 rounded-full grid place-items-center transition ${
+            ytOpen || room.party.state ? "bg-red-600 text-white" : "bg-panel-2 border border-line hover:border-muted/50"
+          }`}
+        >
+          <MonitorPlay className="size-5" />
+        </button>
         <button
           onClick={onLeave}
           aria-label="Ayrıl"
@@ -382,6 +403,7 @@ function InCall({
     <div ref={rootRef} className="h-dvh flex flex-col bg-bg">
       {focused && <FocusView key={focus} {...focused} ink={room.ink} controls={controls} onExit={exitFocus} />}
       {chatOpen && <ChatPanel room={room} onClose={() => setChatOpen(false)} />}
+      {ytOpen && <YouTubePicker room={room} onClose={() => setYtOpen(false)} />}
       {ptt && room.state.mic && (
         <button
           onPointerDown={(e) => {
@@ -410,6 +432,16 @@ function InCall({
         <span className="font-mono text-sm truncate">{room.code}</span>
         <span className="text-xs text-muted ml-1 shrink-0">{remotes.length + 1} kişi</span>
         <div className="ml-auto" />
+        <button
+          onClick={() => setShowStats(!showStats)}
+          aria-label="Bağlantı bilgisi"
+          title="Bağlantı bilgisi: çözünürlük, fps, hız"
+          className={`h-9 w-9 shrink-0 rounded-lg border grid place-items-center ${
+            showStats ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel-2 border-line"
+          }`}
+        >
+          <Activity className="size-4" />
+        </button>
         <RoomLock room={room} />
         <button
           onClick={copy}

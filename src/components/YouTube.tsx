@@ -188,20 +188,24 @@ export function YouTubeStage({ party, hidden, onStop }: { party: WatchParty; hid
   }, [party, videoId === null]);
 
   return (
-    <div className={`absolute inset-0 rounded-2xl overflow-hidden bg-black border border-line ${hidden ? "invisible" : ""}`}>
-      <div ref={host} className="absolute inset-0 [&>div]:size-full [&_iframe]:size-full" />
-      <div className="absolute left-2 top-2 h-7 px-2.5 rounded-lg bg-black/70 backdrop-blur text-xs flex items-center gap-1.5 pointer-events-none">
-        <span className="size-2 rounded-full bg-red-500" />
-        Birlikte izleniyor{party.state?.by ? ` · ${party.state.by} başlattı` : ""}
+    <div
+      className={`absolute inset-0 rounded-2xl overflow-hidden bg-black border border-line flex flex-col ${hidden ? "invisible" : ""}`}
+    >
+      {/* Şerit oynatıcının üstünde: YouTube'un kendi başlığını ve düğmelerini örtmesin. */}
+      <div className="h-9 shrink-0 px-2.5 flex items-center gap-2 bg-panel border-b border-line text-xs">
+        <span className="size-2 rounded-full bg-red-500 shrink-0" />
+        <span className="truncate">Birlikte izleniyor{party.state?.by ? ` · ${party.state.by} başlattı` : ""}</span>
+        <button
+          onClick={onStop}
+          title="Herkes için birlikte izlemeyi bitir"
+          className="ml-auto h-7 px-2.5 rounded-lg bg-panel-2 border border-line flex items-center gap-1.5 hover:border-muted/50 shrink-0"
+        >
+          <X className="size-3.5" />
+          Bitir
+        </button>
       </div>
-      <button
-        onClick={onStop}
-        title="Herkes için birlikte izlemeyi bitir"
-        className="absolute right-2 top-2 h-8 px-2.5 rounded-lg bg-black/70 backdrop-blur text-xs flex items-center gap-1.5 hover:bg-black/85"
-      >
-        <X className="size-3.5" />
-        Bitir
-      </button>
+      <div className="relative flex-1 min-h-0">
+        <div ref={host} className="absolute inset-0 [&>div]:size-full [&_iframe]:size-full" />
       {needTap && !error && (
         <button
           onClick={() => {
@@ -222,6 +226,7 @@ export function YouTubeStage({ party, hidden, onStop }: { party: WatchParty; hid
           <p className="max-w-sm text-sm leading-relaxed">{error}</p>
         </div>
       )}
+      </div>
     </div>
   );
 }

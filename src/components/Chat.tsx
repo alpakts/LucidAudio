@@ -108,21 +108,10 @@ export function ChatPanel({ room, onClose }: { room: Room; onClose: () => void }
     if (el) el.scrollTop = el.scrollHeight;
   }, [items.length]);
 
-  const [ytOpen, setYtOpen] = useState(false);
-  const [ytUrl, setYtUrl] = useState("");
-  const [ytError, setYtError] = useState<string | null>(null);
-  // YouTube'u herkesle birlikte başlat.
+  // Sohbetteki YouTube linkinin yanındaki düğme: herkes için başlat.
   const watch = (url: string) => {
     const v = parseYouTube(url);
-    if (!v) {
-      setYtError("Bu bir YouTube bağlantısı değil.");
-      return false;
-    }
-    room.party.start(v.id, v.start);
-    setYtError(null);
-    setYtOpen(false);
-    setYtUrl("");
-    return true;
+    if (v) room.party.start(v.id, v.start);
   };
 
   const send = () => {
@@ -152,45 +141,10 @@ export function ChatPanel({ room, onClose }: { room: Room; onClose: () => void }
     >
       <header className="h-12 shrink-0 px-4 flex items-center border-b border-line pt-[env(safe-area-inset-top)] box-content">
         <p className="font-medium text-sm">Sohbet</p>
-        <button
-          onClick={() => setYtOpen(!ytOpen)}
-          disabled={!ready}
-          title="Bir YouTube videosunu herkesle aynı anda izle"
-          className="ml-auto h-8 px-2.5 rounded-lg bg-red-600 text-white text-xs font-medium flex items-center gap-1.5 disabled:opacity-40"
-        >
-          <Play className="size-3.5" /> Birlikte izle
-        </button>
-        <button onClick={onClose} aria-label="Sohbeti kapat" className="ml-1 size-9 -mr-2 rounded-lg grid place-items-center hover:bg-white/5">
+        <button onClick={onClose} aria-label="Sohbeti kapat" className="ml-auto size-9 -mr-2 rounded-lg grid place-items-center hover:bg-white/5">
           <X className="size-4" />
         </button>
       </header>
-
-      {ytOpen && (
-        <form
-          className="shrink-0 p-3 border-b border-line"
-          onSubmit={(e) => {
-            e.preventDefault();
-            watch(ytUrl);
-          }}
-        >
-          <p className="text-xs text-muted mb-2">
-            Video herkesin cihazında YouTube&apos;dan oynar; oynatma, durdurma ve sarma herkeste aynı olur.
-          </p>
-          <div className="flex gap-2">
-            <input
-              autoFocus
-              value={ytUrl}
-              onChange={(e) => setYtUrl(e.target.value)}
-              placeholder="YouTube bağlantısı"
-              className="flex-1 min-w-0 h-9 rounded-lg bg-panel-2 border border-line px-3 text-sm outline-none focus:border-accent/60 placeholder:text-muted/60"
-            />
-            <button disabled={!ytUrl.trim()} className="h-9 px-3 rounded-lg bg-red-600 text-white text-xs font-medium disabled:opacity-40">
-              Başlat
-            </button>
-          </div>
-          {ytError && <p className="text-xs text-red-300 mt-2">{ytError}</p>}
-        </form>
-      )}
 
       <div ref={list} className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-2.5">
         {items.length === 0 && (
