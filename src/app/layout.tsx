@@ -8,6 +8,8 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 export const metadata: Metadata = {
   title: "Pencere",
   description: "Hesapsız, linkle açılan görüntülü görüşme ve yüksek kaliteli ekran paylaşımı.",
+  // iPhone'da "Ana Ekrana Ekle" ile tarayıcı çubuğu olmadan, uygulama gibi açılsın.
+  appleWebApp: { capable: true, title: "Pencere", statusBarStyle: "black-translucent" },
 };
 
 export const viewport: Viewport = {

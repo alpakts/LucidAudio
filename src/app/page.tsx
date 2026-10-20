@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { MonitorUp, Video, ArrowRight } from "lucide-react";
 import { Version } from "@/components/Version";
+import { InstallApp } from "@/components/InstallApp";
 
 const RENK = ["mavi", "kirmizi", "yesil", "sari", "mor", "turuncu", "gri", "pembe", "lacivert", "bordo"];
 const HAYVAN = ["kedi", "kartal", "balina", "tilki", "baykus", "ceylan", "yunus", "kaplan", "sincap", "kirpi"];
@@ -76,6 +77,8 @@ export default function Home() {
             <ArrowRight className="size-5" />
           </button>
         </form>
+
+        <InstallApp />
 
         <p className="mt-10 text-xs leading-relaxed text-muted">
           Görüntü sunucudan geçmez, katılımcılar arasında doğrudan akar. En iyi sonuç 2-4 kişide. Ekran paylaşımı
