@@ -358,8 +358,10 @@ function InCall({
       {ptt && room.state.mic && (
         <button
           onPointerDown={(e) => {
-            e.currentTarget.setPointerCapture(e.pointerId);
             room.setPtt(true);
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {}
           }}
           onPointerUp={() => room.setPtt(false)}
           onPointerCancel={() => room.setPtt(false)}
