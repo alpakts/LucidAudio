@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*
+
+# build öncesi node_modules içinden kopyalanır (scripts/copy-noise.mjs)
+/public/noise
+
+# Neon entegrasyonunun kurduğu ajan yetenekleri (projenin parçası değil)
+/.agents
+/.claude
+skills-lock.json

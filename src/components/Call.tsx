@@ -1,0 +1,908 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  Activity,
+  Check,
+  Link2,
+  Maximize,
+  Minimize,
+  Mic,
+  MicOff,
+  MonitorUp,
+  MonitorX,
+  PhoneOff,
+  Video,
+  VideoOff,
+  Volume2,
+  VolumeX,
+  X,
+} from "lucide-react";
+import { canShareScreen, Room, type PeerStats, type RemoteView, type ShareMode, type TrackStats } from "@/lib/room";
+import { sinkSupported } from "@/lib/devices";
+import type { NoiseMode } from "@/lib/noise";
+import { StreamVideo } from "./Media";
+import { Lobby } from "./Lobby";
+import { DeviceMenu, useDevices } from "./Devices";
+
+export function Call({ code }: { code: string }) {
+  const [room, setRoom] = useState<Room | null>(null);
+  const [left, setLeft] = useState(false);
+
+  useEffect(() => () => room?.leave(), [room]);
+
+  if (left)
+    return (
+      <Centered>
+        <p className="text-lg font-medium">Görüşmeden çıktın</p>
+        <div className="flex gap-2 mt-5">
+          <button onClick={() => setLeft(false)} className="h-11 px-5 rounded-xl bg-accent text-accent-ink font-medium">
+            Tekrar katıl
+          </button>
+          <Link href="/" className="h-11 px-5 rounded-xl bg-panel-2 border border-line grid place-items-center">
+            Ana sayfa
+          </Link>
+        </div>
+      </Centered>
+    );
+
+  if (!room)
+    return (
+      <Lobby
+        code={code}
+        onJoin={(name, stream, micOn) => {
+          const r = new Room(code, name);
+          setRoom(r);
+          void r.join(stream, micOn);
+        }}
+      />
+    );
+
+  return (
+    <InCall
+      room={room}
+      onLeave={() => {
+        room.leave();
+        setRoom(null);
+        setLeft(true);
+      }}
+    />
+  );
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return <main className="min-h-full flex flex-col items-center justify-center px-4 py-12 text-center">{children}</main>;
+}
+
+// ---------- görüşme ----------
+
+type ScreenSource = { key: string; name: string; stream: MediaStream; peer: RemoteView };
+
+function InCall({ room, onLeave }: { room: Room; onLeave: () => void }) {
+  useSyncExternalStore(room.subscribe, room.getVersion, room.getVersion);
+  const remotes = room.remoteViews();
+  const [showStats, setShowStats] = useState(false);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const share = useMemo(() => canShareScreen(), []);
+  const speakers = useMemo(() => sinkSupported(), []);
+  const devices = useDevices(`${room.state.mic}${room.state.cam}`);
+  const speaker = room.devices.speaker;
+
+  const screens: ScreenSource[] = remotes
+    .filter((r) => r.screen && r.screen.getVideoTracks().length > 0)
+    .map((r) => ({ key: r.id, name: r.state.name, stream: r.screen!, peer: r }));
+  const active = screens.find((s) => s.key === pinned) ?? screens[0] ?? null;
+  const sharing = !!room.screenStream;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+
+  // Alt çubuktaki düğmeler; tam ekranda da aynısı görünür.
+  const controls = (
+    <>
+        <SplitControl
+          active={room.state.mic}
+          onClick={() => void room.setMic(!room.state.mic)}
+          label={room.state.mic ? "Mikrofonu kapat" : "Mikrofonu aç"}
+          menu={
+            <DeviceMenu
+              label="Ses ayarları"
+              sections={[
+                {
+                  title: "Mikrofon",
+                  options: devices.mic,
+                  value: room.currentDevice("mic"),
+                  onSelect: (id) => void room.selectDevice("mic", id),
+                },
+                {
+                  title: room.noiseMode === "strong" && !room.noiseActive && room.state.mic
+                    ? "Gürültü engelleme (Lucid bu tarayıcıda çalışmadı)"
+                    : "Gürültü engelleme",
+                  options: [
+                    { id: "strong", label: "Lucid: AI destekli gürültü engelleme" },
+                    { id: "standard", label: "Standart: tarayıcının kendi" },
+                    { id: "off", label: "Kapalı: müzik, enstrüman" },
+                  ],
+                  value: room.noiseMode,
+                  onSelect: (id: string) => void room.setNoise(id as NoiseMode),
+                },
+                ...(speakers
+                  ? [
+                      {
+                        title: "Hoparlör",
+                        options: devices.speaker,
+                        value: room.currentDevice("speaker"),
+                        onSelect: (id: string) => void room.selectDevice("speaker", id),
+                      },
+                    ]
+                  : []),
+              ]}
+            />
+          }
+        >
+          {room.state.mic ? <Mic className="size-5" /> : <MicOff className="size-5" />}
+        </SplitControl>
+        <SplitControl
+          active={room.state.cam}
+          onClick={() => void room.setCam(!room.state.cam)}
+          label={room.state.cam ? "Kamerayı kapat" : "Kamerayı aç"}
+          menu={
+            <DeviceMenu
+              label="Kamera ayarları"
+              sections={[
+                {
+                  title: "Kamera",
+                  options: devices.cam,
+                  value: room.currentDevice("cam"),
+                  onSelect: (id) => void room.selectDevice("cam", id),
+                },
+              ]}
+            />
+          }
+        >
+          {room.state.cam ? <Video className="size-5" /> : <VideoOff className="size-5" />}
+        </SplitControl>
+        {share && (
+          <RoundButton
+            active={!sharing}
+            highlight={sharing}
+            onClick={() => (sharing ? room.stopScreen() : void room.startScreen(room.screenMode))}
+            label={sharing ? "Paylaşımı durdur" : "Ekranı paylaş"}
+          >
+            {sharing ? <MonitorX className="size-5" /> : <MonitorUp className="size-5" />}
+          </RoundButton>
+        )}
+        <RoundButton active={!showStats} highlight={showStats} onClick={() => setShowStats(!showStats)} label="Bağlantı bilgisi">
+          <Activity className="size-5" />
+        </RoundButton>
+        <button
+          onClick={onLeave}
+          aria-label="Ayrıl"
+          title="Ayrıl"
+          className="h-12 px-5 rounded-full bg-danger text-white flex items-center gap-2 font-medium hover:brightness-110 transition"
+        >
+          <PhoneOff className="size-5" />
+          <span className="hidden sm:inline">Ayrıl</span>
+        </button>
+    </>
+  );
+
+  // Tam ekran (odak) görünümü: tek görüntü ekranı kaplar, dokununca kontroller çıkar.
+  const [focus, setFocus] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onChange = () => {
+      if (!document.fullscreenElement) setFocus(null);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const enterFocus = (key: string) => {
+    setFocus(key);
+    // iPhone Safari öğe tam ekranını desteklemiyor; orada görünüm yine ekranı kaplar, sadece tarayıcı çubuğu kalır.
+    void rootRef.current?.requestFullscreen?.().catch(() => {});
+  };
+  const exitFocus = () => {
+    setFocus(null);
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  };
+  const focused = resolveFocus(focus, room, remotes, screens);
+
+  // İki kişide WhatsApp düzeni: karşı taraf büyük, kendi kameran köşede küçük; dokununca yer değişir.
+  const one = !active && remotes.length === 1 ? remotes[0] : null;
+  const { areaRef: pipArea, swapped, pipClass, pipProps } = usePip();
+
+  const tiles = (
+    <>
+      <CamTile
+        name={`${room.state.name} (sen)`}
+        stream={room.camStream}
+        cam={room.state.cam}
+        mic={room.state.mic}
+        self
+        mirror={room.selfMirror}
+        videoKey={room.camStream.getVideoTracks()[0]?.id}
+        onFocus={() => enterFocus("cam:self")}
+        speaking={room.speaking.has("self")}
+      />
+      {remotes.map((r) => (
+        <CamTile
+          key={r.id}
+          name={r.state.name}
+          stream={r.cam}
+          cam={r.state.cam}
+          mic={r.state.mic}
+          conn={r.conn}
+          stats={showStats ? r.stats : null}
+          trackId={r.cam?.getVideoTracks()[0]?.id}
+          sinkId={speaker}
+          onFocus={() => enterFocus(`cam:${r.id}`)}
+          speaking={room.speaking.has(r.id)}
+        />
+      ))}
+    </>
+  );
+
+  return (
+    <div ref={rootRef} className="h-dvh flex flex-col bg-bg">
+      {focused && <FocusView key={focus} {...focused} controls={controls} onExit={exitFocus} />}
+      <header className="h-14 shrink-0 px-4 flex items-center gap-3 border-b border-line">
+        <Link href="/" className="text-sm font-semibold tracking-tight">
+          Pencere
+        </Link>
+        <span className="text-muted">/</span>
+        <span className="font-mono text-sm truncate">{room.code}</span>
+        <span className="text-xs text-muted ml-1 shrink-0">{remotes.length + 1} kişi</span>
+        <button
+          onClick={copy}
+          className="ml-auto h-9 px-3 rounded-lg bg-panel-2 border border-line text-sm flex items-center gap-2 shrink-0"
+        >
+          {copied ? <Check className="size-4 text-accent" /> : <Link2 className="size-4" />}
+          <span className="hidden sm:inline">{copied ? "Kopyalandı" : "Linki kopyala"}</span>
+        </button>
+      </header>
+
+      {room.netError && (
+        <div className="px-4 py-2 text-sm bg-danger/10 text-red-300 border-b border-danger/20">{room.netError}</div>
+      )}
+      {room.mediaError && (
+        <div className="px-4 py-2 text-sm bg-danger/10 text-red-300 border-b border-danger/20 flex items-center gap-3">
+          <span className="flex-1">{room.mediaError}</span>
+          <button onClick={() => room.dismissMediaError()} aria-label="Kapat" className="shrink-0 opacity-80 hover:opacity-100">
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
+
+      {sharing && (
+        <SharingBar
+          room={room}
+          showStats={showStats}
+          stats={remotes.map((r) => ({ name: r.state.name, s: r.stats }))}
+        />
+      )}
+
+      <main className="flex-1 min-h-0 p-2 sm:p-3">
+        {active ? (
+          <div className="h-full flex flex-col lg:flex-row gap-2 sm:gap-3">
+            <div className="flex-1 min-h-0 min-w-0 flex flex-col gap-2">
+              {screens.length > 1 && (
+                <div className="flex gap-1.5 overflow-x-auto">
+                  {screens.map((s) => (
+                    <button
+                      key={s.key}
+                      onClick={() => setPinned(s.key)}
+                      className={`h-8 px-3 rounded-lg text-xs border shrink-0 ${
+                        s.key === active.key ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel border-line"
+                      }`}
+                    >
+                      {s.name} ekranı
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="relative flex-1 min-h-0">
+                {/* Seçili olmayan ekranlar da DOM'da kalır ki sesleri kesilmesin. */}
+                {screens.map((s) => (
+                  <ScreenStage
+                    key={s.key}
+                    source={s}
+                    hidden={s.key !== active.key}
+                    stats={showStats ? s.peer.stats : null}
+                    sinkId={speaker}
+                    onFocus={() => enterFocus(`screen:${s.key}`)}
+                  />
+                ))}
+              </div>
+            </div>
+            <div className="shrink-0 flex lg:flex-col gap-2 overflow-auto lg:w-64 h-28 sm:h-36 lg:h-auto [&>*]:shrink-0 [&>*]:aspect-video [&>*]:h-full lg:[&>*]:h-auto lg:[&>*]:w-full">
+              {tiles}
+            </div>
+          </div>
+        ) : one ? (
+          <div ref={pipArea} className="relative h-full">
+            {/* İki kutu hep aynı sırada çizilir, yer değişince sadece sınıfları değişir:
+                video öğesi yeniden kurulmaz, ses kesilmez. */}
+            <CamTile
+              key="self"
+              name={`${room.state.name} (sen)`}
+              stream={room.camStream}
+              cam={room.state.cam}
+              mic={room.state.mic}
+              self
+              mirror={room.selfMirror}
+              videoKey={room.camStream.getVideoTracks()[0]?.id}
+              onFocus={() => enterFocus("cam:self")}
+              speaking={room.speaking.has("self")}
+              variant={swapped ? "main" : "pip"}
+              className={swapped ? "inset-0" : pipClass}
+              boxProps={swapped ? undefined : pipProps}
+            />
+            <CamTile
+              key={one.id}
+              name={one.state.name}
+              stream={one.cam}
+              cam={one.state.cam}
+              mic={one.state.mic}
+              conn={one.conn}
+              stats={showStats ? one.stats : null}
+              trackId={one.cam?.getVideoTracks()[0]?.id}
+              sinkId={speaker}
+              onFocus={() => enterFocus(`cam:${one.id}`)}
+              speaking={room.speaking.has(one.id)}
+              variant={swapped ? "pip" : "main"}
+              className={swapped ? pipClass : "inset-0"}
+              boxProps={swapped ? pipProps : undefined}
+            />
+          </div>
+        ) : (
+          <div className={`h-full grid gap-2 sm:gap-3 ${gridFor(remotes.length + 1)}`}>
+            {tiles}
+            {remotes.length === 0 && <EmptyHint onCopy={copy} copied={copied} />}
+          </div>
+        )}
+      </main>
+
+      <footer className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center justify-center gap-2">
+        {controls}
+      </footer>
+    </div>
+  );
+}
+
+function gridFor(n: number) {
+  if (n <= 1) return "grid-cols-1 sm:grid-cols-2";
+  if (n === 2) return "grid-cols-1 grid-rows-2 sm:grid-cols-2 sm:grid-rows-1";
+  return "grid-cols-2 grid-rows-2";
+}
+
+function EmptyHint({ onCopy, copied }: { onCopy: () => void; copied: boolean }) {
+  return (
+    <div className="rounded-2xl border border-dashed border-line flex flex-col items-center justify-center text-center p-6 gap-3">
+      <p className="text-muted text-sm">Odada şimdilik sadece sen varsın.</p>
+      <button onClick={onCopy} className="h-10 px-4 rounded-xl bg-accent text-accent-ink text-sm font-medium flex items-center gap-2">
+        {copied ? <Check className="size-4" /> : <Link2 className="size-4" />}
+        {copied ? "Kopyalandı" : "Davet linkini kopyala"}
+      </button>
+    </div>
+  );
+}
+
+function RoundButton({
+  active,
+  highlight = false,
+  onClick,
+  label,
+  children,
+}: {
+  active: boolean;
+  highlight?: boolean;
+  onClick: () => void;
+  label: string;
+  children: React.ReactNode;
+}) {
+  const cls = highlight
+    ? "bg-accent text-accent-ink"
+    : active
+      ? "bg-panel-2 border border-line hover:border-muted/50"
+      : "bg-danger/15 border border-danger/30 text-red-300";
+  return (
+    <button onClick={onClick} aria-label={label} title={label} className={`size-12 rounded-full grid place-items-center transition ${cls}`}>
+      {children}
+    </button>
+  );
+}
+
+// Meet'teki gibi: solda cihaz menüsünü açan ok, sağda aç/kapa düğmesi.
+function SplitControl({
+  active,
+  onClick,
+  label,
+  menu,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  menu: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`flex items-center rounded-full pl-0.5 border transition ${
+        active ? "bg-panel-2 border-line" : "bg-danger/15 border-danger/30 text-red-300"
+      }`}
+    >
+      {menu}
+      <button
+        onClick={onClick}
+        aria-label={label}
+        title={label}
+        className={`size-12 -my-px -mr-px rounded-full grid place-items-center transition ${
+          active ? "bg-white/5 hover:bg-white/10" : "bg-danger text-white"
+        }`}
+      >
+        {children}
+      </button>
+    </div>
+  );
+}
+
+// ---------- kutular ----------
+
+// Discord'daki konuşuyor ışığı.
+const SPEAK_RING = "shadow-[0_0_0_2px_#23a55a,0_0_18px_rgba(35,165,90,0.45)] border-transparent";
+const SPEAK_AVATAR = "shadow-[0_0_0_3px_#23a55a,0_0_16px_rgba(35,165,90,0.5)]";
+
+function CamTile({
+  name,
+  stream,
+  cam,
+  mic,
+  self = false,
+  mirror = false,
+  videoKey,
+  conn,
+  stats,
+  trackId,
+  sinkId,
+  onFocus,
+  variant = "grid",
+  className = "",
+  boxProps,
+  speaking = false,
+}: {
+  name: string;
+  stream: MediaStream | null;
+  cam: boolean;
+  mic: boolean;
+  self?: boolean;
+  mirror?: boolean;
+  videoKey?: string;
+  sinkId?: string;
+  onFocus: () => void;
+  conn?: RTCPeerConnectionState;
+  stats?: PeerStats | null;
+  trackId?: string;
+  variant?: "grid" | "main" | "pip";
+  speaking?: boolean;
+  className?: string;
+  boxProps?: React.HTMLAttributes<HTMLDivElement>;
+}) {
+  const pip = variant === "pip";
+  const box = useRef<HTMLDivElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const connecting = conn && conn !== "connected";
+  const t = trackId ? stats?.inbound[trackId] : undefined;
+
+  return (
+    <div
+      ref={box}
+      onDoubleClick={pip ? undefined : onFocus}
+      {...boxProps}
+      // Izgarada kendi yerinde (relative); büyük ve küçük pencerede konumu üst düzen verir (absolute).
+      className={`group overflow-hidden min-h-0 ${variant === "grid" ? "relative" : "absolute"} ${
+        pip
+          ? "rounded-xl border border-white/20 bg-panel-2 shadow-xl shadow-black/50"
+          : variant === "main"
+            ? "rounded-2xl bg-black border border-line"
+            : "rounded-2xl bg-panel border border-line"
+      } ${speaking ? SPEAK_RING : ""} transition-shadow duration-150 ${className}`}
+    >
+      <StreamVideo
+        key={videoKey}
+        stream={stream}
+        muted={self}
+        mirror={self && mirror}
+        sinkId={sinkId}
+        videoRef={video}
+        // Büyük görüntü telefonda ekranı doldurur, geniş ekranda kırpılmasın diye sığdırılır.
+        fit={variant === "main" ? "responsive" : "cover"}
+        className={`absolute inset-0 size-full pointer-events-none ${cam ? "" : "opacity-0"}`}
+      />
+      {!cam && (
+        <div className="absolute inset-0 grid place-items-center pointer-events-none">
+          <div
+            className={`rounded-full bg-panel-2 border border-line grid place-items-center font-medium text-muted transition-shadow duration-150 ${
+              pip ? "size-10 text-base" : "size-16 text-2xl"
+            } ${speaking ? SPEAK_AVATAR : ""}`}
+          >
+            {(name.trim()[0] ?? "?").toLocaleUpperCase("tr")}
+          </div>
+        </div>
+      )}
+      {pip ? (
+        !mic && (
+          <div className="absolute left-1.5 bottom-1.5 size-6 rounded-full bg-black/60 grid place-items-center pointer-events-none">
+            <MicOff className="size-3.5 text-red-300" />
+          </div>
+        )
+      ) : (
+        <div className="absolute left-2 bottom-2 max-w-[calc(100%-1rem)] h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5 pointer-events-none">
+          {!mic && <MicOff className="size-3.5 text-red-300 shrink-0" />}
+          <span className="truncate">{name}</span>
+          {connecting && <span className="text-muted shrink-0">· {connLabel(conn)}</span>}
+        </div>
+      )}
+      {!pip && (
+      <button
+        onClick={onFocus}
+        aria-label="Tam ekran"
+        title="Tam ekran"
+        className="absolute right-2 bottom-2 size-8 rounded-lg bg-black/60 backdrop-blur grid place-items-center opacity-0 group-hover:opacity-90 focus-visible:opacity-90 [@media(hover:none)]:opacity-80 transition"
+      >
+        <Maximize className="size-4" />
+      </button>
+      )}
+      {stats && !pip && (
+        <StatsBadge
+          className="absolute right-2 top-2"
+          lines={[t ? fmtTrack(t) : null, routeLine(stats)].filter(Boolean) as string[]}
+        />
+      )}
+    </div>
+  );
+}
+
+function ScreenStage({
+  source,
+  hidden,
+  stats,
+  sinkId,
+  onFocus,
+}: {
+  source: ScreenSource;
+  hidden: boolean;
+  stats: PeerStats | null;
+  sinkId?: string;
+  onFocus: () => void;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const video = useRef<HTMLVideoElement>(null);
+  const t = stats?.inbound[source.stream.getVideoTracks()[0]?.id ?? ""];
+
+  return (
+    <div ref={box} className={`absolute inset-0 rounded-2xl overflow-hidden bg-black border border-line group ${hidden ? "invisible" : ""}`}>
+      <StreamVideo
+        stream={source.stream}
+        fit="contain"
+        sinkId={sinkId}
+        videoRef={video}
+        className="absolute inset-0 size-full"
+        onDoubleClick={onFocus}
+      />
+      <div className="absolute left-2 top-2 h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5">
+        <MonitorUp className="size-3.5 text-accent" />
+        {source.name} ekranı
+      </div>
+      <button
+        onClick={onFocus}
+        aria-label="Tam ekran"
+        title="Tam ekran (çift tıkla da olur)"
+        className="absolute right-2 bottom-2 size-9 rounded-lg bg-black/60 backdrop-blur grid place-items-center opacity-80 hover:opacity-100"
+      >
+        <Maximize className="size-4" />
+      </button>
+      {stats && (
+        <StatsBadge className="absolute right-2 top-2" lines={[t ? fmtTrack(t) : "görüntü bekleniyor", routeLine(stats)].filter(Boolean) as string[]} />
+      )}
+    </div>
+  );
+}
+
+function SharingBar({
+  room,
+  showStats,
+  stats,
+}: {
+  room: Room;
+  showStats: boolean;
+  stats: { name: string; s: PeerStats | null }[];
+}) {
+  const modes: { k: ShareMode; label: string; hint: string }[] = [
+    { k: "detail", label: "Yazı", hint: "Kod, belge, site: 60 fps, internet daralırsa önce akıcılıktan kısar, yazı keskin kalır" },
+    { k: "motion", label: "Hareket", hint: "Video, oyun: 60 fps, internet daralırsa önce çözünürlükten kısar, akıcılık korunur" },
+  ];
+  const audio = room.screenAudio;
+  return (
+    <div className="px-4 py-2 border-b border-line bg-accent/[0.06] flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+      <span className="flex items-center gap-2 text-accent">
+        <span className="size-2 rounded-full bg-accent animate-pulse" />
+        Ekranını paylaşıyorsun
+      </span>
+      <div className="flex rounded-lg border border-line overflow-hidden">
+        {modes.map((m) => (
+          <button
+            key={m.k}
+            title={m.hint}
+            onClick={() => room.setScreenMode(m.k)}
+            className={`h-8 px-3 text-xs ${room.screenMode === m.k ? "bg-accent text-accent-ink" : "bg-panel hover:bg-panel-2"}`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      {audio && (
+        <button
+          onClick={() => room.setScreenAudio(!audio.on)}
+          title={audio.on ? "Paylaşılan ekran sesini kapat" : "Paylaşılan ekran sesini aç"}
+          className={`h-8 px-3 rounded-lg border text-xs flex items-center gap-1.5 ${
+            audio.on ? "bg-panel border-line hover:bg-panel-2" : "bg-danger/15 border-danger/30 text-red-300"
+          }`}
+        >
+          {audio.on ? <Volume2 className="size-3.5" /> : <VolumeX className="size-3.5" />}
+          Ekran sesi {audio.on ? "açık" : "kapalı"}
+        </button>
+      )}
+      {audio?.on && !audio.filtered && (
+        <span className="text-xs text-amber-200">
+          Bu tarayıcı karşı tarafın sesini paylaşımdan ayıramıyor, sesini geri duyabilir. Kulaklık tak ya da ekran
+          sesini kapat.
+        </span>
+      )}
+      {showStats &&
+        stats.map(({ name, s }) =>
+          s?.outScreen ? (
+            <span key={name} className="text-xs text-muted font-mono">
+              → {name}: {fmtTrack(s.outScreen)}
+              {s.outScreen.limit !== "none" ? ` · sınır: ${limitLabel(s.outScreen.limit)}` : ""}
+            </span>
+          ) : null,
+        )}
+    </div>
+  );
+}
+
+function StatsBadge({ lines, className = "" }: { lines: string[]; className?: string }) {
+  return (
+    <div className={`rounded-lg bg-black/70 backdrop-blur px-2 py-1 text-[11px] leading-snug font-mono text-right ${className}`}>
+      {lines.map((l) => (
+        <div key={l}>{l}</div>
+      ))}
+    </div>
+  );
+}
+
+function fmtTrack(t: TrackStats) {
+  const mbps = t.kbps >= 1000 ? `${(t.kbps / 1000).toFixed(1)} Mbps` : `${t.kbps} kbps`;
+  return `${t.width}×${t.height} · ${t.fps} fps · ${mbps}`;
+}
+
+function routeLine(s: PeerStats) {
+  if (!s.route) return null;
+  return `${s.route === "direct" ? "doğrudan" : "TURN aktarma"}${s.rttMs !== null ? ` · ${s.rttMs} ms` : ""}`;
+}
+
+function connLabel(c?: RTCPeerConnectionState) {
+  switch (c) {
+    case "new":
+    case "connecting":
+      return "bağlanıyor";
+    case "disconnected":
+      return "bağlantı koptu, bekleniyor";
+    case "failed":
+      return "bağlanamadı, tekrar deneniyor";
+    case "closed":
+      return "kapandı";
+    default:
+      return "";
+  }
+}
+
+function limitLabel(l: string) {
+  return l === "bandwidth" ? "bant genişliği" : l === "cpu" ? "işlemci" : l;
+}
+
+// ---------- tam ekran (odak) ----------
+
+type Focused = {
+  title: string;
+  stream: MediaStream | null;
+  mirror: boolean;
+  camOff: boolean;
+  initial: string;
+};
+
+function resolveFocus(focus: string | null, room: Room, remotes: RemoteView[], screens: ScreenSource[]): Focused | null {
+  if (!focus) return null;
+  const [kind, id] = focus.split(":");
+  if (kind === "screen") {
+    const s = screens.find((x) => x.key === id);
+    return s ? { title: `${s.name} ekranı`, stream: s.stream, mirror: false, camOff: false, initial: "" } : null;
+  }
+  if (id === "self")
+    return {
+      title: `${room.state.name} (sen)`,
+      stream: room.camStream,
+      mirror: room.selfMirror,
+      camOff: !room.state.cam,
+      initial: room.state.name.trim()[0] ?? "?",
+    };
+  const r = remotes.find((x) => x.id === id);
+  // Kişi ayrıldıysa ya da paylaşım bittiyse odak kendiliğinden düşer, normal düzen görünür.
+  return r ? { title: r.state.name, stream: r.cam, mirror: false, camOff: !r.state.cam, initial: r.state.name.trim()[0] ?? "?" } : null;
+}
+
+const HIDE_MS = 3500;
+
+function FocusView({
+  title,
+  stream,
+  mirror,
+  camOff,
+  initial,
+  controls,
+  onExit,
+}: Focused & { controls: React.ReactNode; onExit: () => void }) {
+  const [shown, setShown] = useState(true);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const arm = () => {
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setShown(false), HIDE_MS);
+  };
+  const poke = () => {
+    setShown(true);
+    arm();
+  };
+  useEffect(() => {
+    timer.current = setTimeout(() => setShown(false), HIDE_MS);
+    return () => {
+      if (timer.current) clearTimeout(timer.current);
+    };
+  }, []);
+
+  const bar = `transition-opacity duration-200 ${shown ? "opacity-100" : "opacity-0 pointer-events-none"}`;
+
+  return (
+    <div
+      className={`fixed inset-0 z-40 bg-black select-none ${shown ? "" : "cursor-none"}`}
+      onClick={() => (shown ? setShown(false) : poke())}
+      onPointerMove={(e) => e.pointerType === "mouse" && poke()}
+    >
+      {/* Ses alttaki kutulardan çalmaya devam eder; burada sessiz, yoksa iki kez duyulur. */}
+      <StreamVideo
+        key={stream?.getVideoTracks()[0]?.id}
+        stream={stream}
+        muted
+        mirror={mirror}
+        fit="contain"
+        className={`absolute inset-0 size-full ${camOff ? "opacity-0" : ""}`}
+      />
+      {camOff && (
+        <div className="absolute inset-0 grid place-items-center">
+          <div className="size-28 rounded-full bg-panel-2 border border-line grid place-items-center text-5xl font-medium text-muted">
+            {initial.toLocaleUpperCase("tr")}
+          </div>
+        </div>
+      )}
+
+      <div
+        className={`absolute inset-x-0 top-0 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] flex items-center gap-3 bg-gradient-to-b from-black/70 to-transparent ${bar}`}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={arm}
+      >
+        <span className="text-sm truncate">{title}</span>
+        <button
+          onClick={onExit}
+          aria-label="Tam ekrandan çık"
+          title="Tam ekrandan çık (Esc)"
+          className="ml-auto size-10 shrink-0 rounded-full bg-black/50 border border-white/20 grid place-items-center hover:bg-black/70"
+        >
+          <Minimize className="size-4" />
+        </button>
+      </div>
+
+      <div
+        className={`absolute inset-x-0 bottom-0 px-3 pt-10 pb-[max(1rem,env(safe-area-inset-bottom))] flex items-center justify-center gap-2 bg-gradient-to-t from-black/75 to-transparent ${bar}`}
+        onClick={(e) => e.stopPropagation()}
+        onPointerDown={arm}
+      >
+        {controls}
+      </div>
+    </div>
+  );
+}
+
+// ---------- küçük pencere (PiP) ----------
+
+type Corner = "tl" | "tr" | "bl" | "br";
+const CORNER: Record<Corner, string> = {
+  tl: "top-3 left-3",
+  tr: "top-3 right-3",
+  bl: "bottom-3 left-3",
+  br: "bottom-3 right-3",
+};
+const PIP_KEY = "pencere:pip";
+
+// Sürükle bırak, en yakın köşeye otur; sürüklemeden dokunursan büyük ve küçük yer değiştirir.
+function usePip() {
+  const areaRef = useRef<HTMLDivElement>(null);
+  const [corner, setCorner] = useState<Corner>(() => {
+    try {
+      const c = localStorage.getItem(PIP_KEY) as Corner | null;
+      return c && c in CORNER ? c : "tr";
+    } catch {
+      return "tr";
+    }
+  });
+  const [swapped, setSwapped] = useState(false);
+  const [drag, setDrag] = useState<{ dx: number; dy: number } | null>(null);
+  const start = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+
+  const pipProps: React.HTMLAttributes<HTMLDivElement> = {
+    onPointerDown: (e) => {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      start.current = { x: e.clientX, y: e.clientY, moved: false };
+    },
+    onPointerMove: (e) => {
+      const st = start.current;
+      if (!st) return;
+      const dx = e.clientX - st.x;
+      const dy = e.clientY - st.y;
+      if (!st.moved && Math.hypot(dx, dy) < 6) return;
+      st.moved = true;
+      setDrag({ dx, dy });
+    },
+    onPointerUp: (e) => {
+      const st = start.current;
+      start.current = null;
+      setDrag(null);
+      if (!st) return;
+      if (!st.moved) {
+        setSwapped((v) => !v);
+        return;
+      }
+      const area = areaRef.current?.getBoundingClientRect();
+      if (!area) return;
+      const right = e.clientX > area.left + area.width / 2;
+      const bottom = e.clientY > area.top + area.height / 2;
+      const next: Corner = `${bottom ? "b" : "t"}${right ? "r" : "l"}` as Corner;
+      setCorner(next);
+      try {
+        localStorage.setItem(PIP_KEY, next);
+      } catch {}
+    },
+    onPointerCancel: () => {
+      start.current = null;
+      setDrag(null);
+    },
+    style: {
+      transform: drag ? `translate(${drag.dx}px, ${drag.dy}px)` : undefined,
+      transition: drag ? "none" : undefined,
+      touchAction: "none",
+    },
+    title: "Sürükle: köşe değiştir · Dokun: büyüt",
+  };
+
+  const pipClass = `z-10 ${CORNER[corner]} w-28 aspect-[3/4] sm:w-56 sm:aspect-video cursor-grab active:cursor-grabbing transition-[top,left,right,bottom,transform] duration-200`;
+
+  return { areaRef, swapped, pipClass, pipProps };
+}
