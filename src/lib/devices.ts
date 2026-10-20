@@ -1,6 +1,7 @@
 // Kamera, mikrofon ve hoparlör: kısıtlar, seçim tercihleri, hata metinleri.
 
 import type { InputMode, NoiseMode } from "./noise";
+import type { BlurMode } from "./blur";
 
 // Güçlü modda tarayıcının kendi gürültü engellemesi kapalı: RNNoise ile üst üste binince ses boğuklaşıyor.
 // Kapalı modda otomatik ses seviyesi de kapanır (müzik, enstrüman için).
@@ -16,6 +17,7 @@ export type DevicePrefs = {
   noise?: NoiseMode;
   input?: InputMode;
   gateDb?: number; // ses etkinliği eşiği (dBFS)
+  blur?: BlurMode;
 };
 const PREF_KEY = "pencere:devices";
 

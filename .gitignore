@@ -43,8 +43,9 @@ next-env.d.ts
 .vercel
 .env*
 
-# build öncesi node_modules içinden kopyalanır (scripts/copy-noise.mjs)
+# build öncesi node_modules içinden kopyalanır (scripts/copy-assets.mjs)
 /public/noise
+/public/mediapipe
 
 # Neon entegrasyonunun kurduğu ajan yetenekleri (projenin parçası değil)
 /.agents

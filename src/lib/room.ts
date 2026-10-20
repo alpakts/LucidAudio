@@ -5,6 +5,7 @@
 import { acquireTrack, loadDevicePrefs, mediaErrorText, saveDevicePrefs, type DevicePrefs } from "./devices";
 import { createMicChain, type InputMode, type MicChain, type NoiseMode } from "./noise";
 import { Ink, type InkMsg } from "./ink";
+import { createBlurChain, type BlurChain, type BlurMode } from "./blur";
 
 export type ShareMode = "detail" | "motion";
 
@@ -193,10 +194,8 @@ export class Room {
   // Kamera/mikrofon girişte alındı; ağ beklemesinden önce bağla. Mikrofon kapalı girildiyse
   // parça susturulmuş olarak kalır ki açınca yeniden izin/pazarlık gerekmesin.
   async join(stream: MediaStream | null, micOn = true) {
-    for (const t of stream?.getVideoTracks() ?? []) {
-      t.contentHint = "motion";
-      this.camStream.addTrack(t);
-    }
+    const rawCam = stream?.getVideoTracks()[0];
+    if (rawCam) await this.installCam(rawCam);
     const rawMic = stream?.getAudioTracks()[0];
     if (rawMic) await this.installMic(rawMic, micOn);
     this.state = {
@@ -235,6 +234,8 @@ export class Room {
     for (const item of this.chat) if (item.file?.url) URL.revokeObjectURL(item.file.url);
     this.remotes.clear();
     for (const t of this.camStream.getTracks()) t.stop();
+    this.camChain?.stop();
+    this.camRaw?.stop();
     if (this.gateTimer) clearInterval(this.gateTimer);
     this.micChain?.stop();
     this.micChain = null;
@@ -574,20 +575,13 @@ export class Room {
   }
 
   async setCam(on: boolean) {
-    const cur = this.camStream.getVideoTracks()[0];
     if (!on) {
-      if (cur) {
-        cur.stop();
-        this.camStream.removeTrack(cur);
-        // Göndericiyi sakla, sonra replaceTrack ile yeniden kullanılır: tekrar pazarlık gerekmez.
-        for (const r of this.remotes.values())
-          for (const s of r.pc.getSenders()) if (s.track === cur) void s.replaceTrack(null);
-      }
+      this.releaseCam();
       this.state = { ...this.state, cam: false };
       this.broadcastState();
       return;
     }
-    if (cur) return;
+    if (this.camRaw) return;
     let t: MediaStreamTrack | undefined;
     try {
       t = await acquireTrack("video", this.devices.cam);
@@ -595,14 +589,82 @@ export class Room {
       console.warn("kamera", e);
       this.mediaError = mediaErrorText(e, "kamera");
     }
-    if (t) {
-      t.contentHint = "motion";
-      this.camStream.addTrack(t);
-      this.replaceOrAdd("video", t);
-      this.markCamSenders();
-    }
+    if (t) await this.installCam(t);
     this.state = { ...this.state, cam: !!t };
     this.broadcastState();
+  }
+
+  // ---------- kamera hattı (arka plan bulanıklaştırma) ----------
+
+  private camRaw: MediaStreamTrack | null = null;
+  private camChain: BlurChain | null = null;
+  // Bulanıklaştırma seçili ama bu cihazda çalıştırılamadıysa false (ham görüntü gider).
+  blurActive = false;
+
+  get blurMode(): BlurMode {
+    return this.devices.blur ?? "off";
+  }
+
+  async setBlur(mode: BlurMode) {
+    this.devices = { ...this.devices, blur: mode };
+    saveDevicePrefs(this.devices);
+    // Hat kuruluyken yalnızca güç değişiyorsa yeniden kurmaya gerek yok.
+    if (this.camChain && mode !== "off") {
+      this.camChain.setMode(mode);
+      this.emit();
+      return;
+    }
+    if (this.camRaw) await this.installCam(this.camRaw);
+    this.emit();
+  }
+
+  // Ham kamerayı seçili ayara göre işleyip gönderilen parça yapar ve eskisinin yerine koyar.
+  private async installCam(raw: MediaStreamTrack) {
+    let chain: BlurChain | null = null;
+    if (this.blurMode !== "off") {
+      try {
+        chain = await createBlurChain(raw, this.blurMode);
+      } catch (e) {
+        console.warn("arka plan bulanıklaştırma çalışmadı, ham görüntü gidiyor", e);
+        this.mediaError = "Arka plan bulanıklaştırma bu cihazda başlatılamadı.";
+      }
+    }
+    this.blurActive = !!chain;
+    const out = chain?.track ?? raw;
+    out.contentHint = "motion";
+
+    const old = this.camStream.getVideoTracks()[0];
+    const oldChain = this.camChain;
+    const oldRaw = this.camRaw;
+    this.camRaw = raw;
+    this.camChain = chain;
+    if (old) {
+      this.camStream.removeTrack(old);
+      this.camStream.addTrack(out);
+      for (const r of this.remotes.values())
+        for (const s of r.pc.getSenders()) if (s.track === old) void s.replaceTrack(out);
+    } else {
+      this.camStream.addTrack(out);
+      this.replaceOrAdd("video", out);
+    }
+    this.markCamSenders();
+    oldChain?.stop();
+    if (oldRaw && oldRaw !== raw) oldRaw.stop();
+    this.emit();
+  }
+
+  // Kamerayı kapat; gönderici saklanır, açılınca replaceTrack ile yeniden kullanılır (pazarlık gerekmez).
+  private releaseCam() {
+    const cur = this.camStream.getVideoTracks()[0];
+    if (cur) {
+      this.camStream.removeTrack(cur);
+      for (const r of this.remotes.values())
+        for (const s of r.pc.getSenders()) if (s.track === cur) void s.replaceTrack(null);
+    }
+    this.camChain?.stop();
+    this.camRaw?.stop();
+    this.camChain = null;
+    this.camRaw = null;
   }
 
   // ---------- cihaz seçimi ----------
@@ -610,12 +672,12 @@ export class Room {
   currentDevice(kind: "mic" | "cam" | "speaker"): string {
     if (kind === "speaker") return this.devices.speaker ?? "";
     // Gönderilen ses parçası işlenmiş olabilir; cihaz bilgisi ham parçada.
-    const t = kind === "mic" ? this.micRaw : this.camStream.getVideoTracks()[0];
+    const t = kind === "mic" ? this.micRaw : this.camRaw;
     return t?.getSettings().deviceId ?? this.devices[kind] ?? "";
   }
 
   get selfMirror() {
-    return this.camStream.getVideoTracks()[0]?.getSettings().facingMode !== "environment";
+    return this.camRaw?.getSettings().facingMode !== "environment";
   }
 
   async selectDevice(kind: "mic" | "cam" | "speaker", deviceId: string) {
@@ -644,15 +706,13 @@ export class Room {
       this.broadcastState();
       return;
     }
-    const cur = this.camStream.getVideoTracks()[0];
     // Kapalı kamera için sadece tercih kaydedilir, açılınca bu cihaz kullanılır.
-    if (!cur) {
+    if (!this.camRaw) {
       this.emit();
       return;
     }
     // Telefonlar iki kamerayı aynı anda açamıyor: önce eskisini bırak.
-    cur.stop();
-    this.camStream.removeTrack(cur);
+    this.releaseCam();
     let next: MediaStreamTrack | undefined;
     try {
       next = await acquireTrack("video", deviceId);
@@ -663,12 +723,7 @@ export class Room {
         next = await acquireTrack("video");
       } catch {}
     }
-    if (next) {
-      next.contentHint = "motion";
-      this.camStream.addTrack(next);
-    }
-    for (const r of this.remotes.values())
-      for (const s of r.pc.getSenders()) if (s.track === cur) void s.replaceTrack(next ?? null);
+    if (next) await this.installCam(next);
     this.state = { ...this.state, cam: !!next };
     this.broadcastState();
   }

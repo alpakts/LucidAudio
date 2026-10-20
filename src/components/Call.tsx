@@ -28,6 +28,7 @@ import {
 import { canShareScreen, Room, type PeerStats, type RemoteView, type ShareMode, type TrackStats } from "@/lib/room";
 import { sinkSupported } from "@/lib/devices";
 import type { InputMode, NoiseMode } from "@/lib/noise";
+import type { BlurMode } from "@/lib/blur";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
@@ -232,6 +233,16 @@ function InCall({
                   options: devices.cam,
                   value: room.currentDevice("cam"),
                   onSelect: (id) => void room.selectDevice("cam", id),
+                },
+                {
+                  title: "Arka plan",
+                  options: [
+                    { id: "off", label: "Bulanıklaştırma kapalı" },
+                    { id: "light", label: "Hafif bulanık" },
+                    { id: "strong", label: "Güçlü bulanık" },
+                  ],
+                  value: room.blurMode,
+                  onSelect: (id: string) => void room.setBlur(id as BlurMode),
                 },
               ]}
             />

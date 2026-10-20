@@ -3,14 +3,15 @@
   "version": "0.6.0",
   "private": true,
   "scripts": {
-    "predev": "node scripts/copy-noise.mjs",
+    "predev": "node scripts/copy-assets.mjs",
     "dev": "next dev",
-    "prebuild": "node scripts/copy-noise.mjs",
+    "prebuild": "node scripts/copy-assets.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "1.0.1",
     "@neondatabase/serverless": "^1.2.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "lucide-react": "^1.59.0",
