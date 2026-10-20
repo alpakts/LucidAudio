@@ -34,7 +34,7 @@ import type { BlurMode } from "@/lib/blur";
 import { StreamVideo } from "./Media";
 import { Lobby } from "./Lobby";
 import { ChatPanel } from "./Chat";
-import { InkLayer, SelfInkWindow } from "./Ink";
+import { InkLayer, openInkWindow, SelfInkWindow } from "./Ink";
 import type { Ink } from "@/lib/ink";
 import { DeviceMenu, useDevices } from "./Devices";
 
@@ -97,7 +97,14 @@ function Centered({ children }: { children: React.ReactNode }) {
 // ---------- görüşme ----------
 
 // stream yalnızca İzle'ye basıldıysa ve görüntü geldiyse dolu.
-type ScreenSource = { key: string; name: string; stream: MediaStream | null; watching: boolean; peer: RemoteView };
+type ScreenSource = {
+  key: string;
+  name: string;
+  stream: MediaStream | null;
+  watching: boolean;
+  peer: RemoteView | null; // kendi yayınında null
+  self?: boolean;
+};
 
 function InCall({
   room,
@@ -116,7 +123,10 @@ function InCall({
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const [inkOpen, setInkOpen] = useState(false);
+  // Çizim önizlemesi: PiP penceresi, sayfa içi panel ("panel") ya da kapalı (null).
+  const [inkWin, setInkWin] = useState<Window | "panel" | null>(null);
+  // Paylaşım bitince PiP penceresi kapanır; kapanmış pencere kapalı sayılır.
+  const inkOpen = inkWin !== null && !(inkWin !== "panel" && inkWin.closed);
   const ptt = room.inputMode === "ptt" && room.gateActive;
 
   // Bas-konuş: Boşluk tuşu (yazı alanındayken değil).
@@ -158,10 +168,14 @@ function InCall({
       name: r.state.name,
       stream: r.screen && r.screen.getVideoTracks().length > 0 ? r.screen : null,
       watching: r.watching,
-      peer: r,
+      peer: r as RemoteView | null,
     }));
-  const active = screens.find((s) => s.key === pinned) ?? screens[0] ?? null;
   const sharing = !!room.screenStream;
+  // Discord gibi: paylaşan kendi yayınını da görür (sessiz; üstüne çizim yapılabilir).
+  // Başkasının yayını varsa varsayılan olarak o öne çıkar.
+  if (room.screenStream)
+    screens.push({ key: room.me, name: "Sen", stream: room.screenStream, watching: true, peer: null, self: true });
+  const active = screens.find((s) => s.key === pinned) ?? screens[0] ?? null;
 
   const copy = async () => {
     try {
@@ -314,7 +328,7 @@ function InCall({
     if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
   };
   const focused = resolveFocus(focus, room, remotes, screens);
-  const closeInk = useCallback(() => setInkOpen(false), []);
+  const closeInk = useCallback(() => setInkWin(null), []);
 
   // İki kişide WhatsApp düzeni: karşı taraf büyük, kendi kameran köşede küçük; dokununca yer değişir.
   const one = !active && remotes.length === 1 ? remotes[0] : null;
@@ -411,11 +425,25 @@ function InCall({
           showStats={showStats}
           stats={remotes.map((r) => ({ name: r.state.name, s: r.stats }))}
           inkOpen={inkOpen}
-          onInk={() => setInkOpen(!inkOpen)}
+          onInk={() => {
+            if (inkOpen && inkWin) {
+              if (inkWin !== "panel") inkWin.close();
+              setInkWin(null);
+              return;
+            }
+            // Tıklamanın içinde aç: Chrome başka türlü pencereyi engeller.
+            void openInkWindow(closeInk).then((w) => setInkWin(w ?? "panel"));
+          }}
         />
       )}
       {sharing && inkOpen && room.screenStream && (
-        <SelfInkWindow ink={room.ink} owner={room.me} stream={room.screenStream} onClose={closeInk} />
+        <SelfInkWindow
+          ink={room.ink}
+          owner={room.me}
+          stream={room.screenStream}
+          win={inkWin === "panel" ? null : inkWin}
+          onClose={closeInk}
+        />
       )}
 
       <main className="flex-1 min-h-0 p-2 sm:p-3">
@@ -432,7 +460,7 @@ function InCall({
                         s.key === active.key ? "bg-accent/15 border-accent/40 text-accent" : "bg-panel border-line"
                       }`}
                     >
-                      {s.name} ekranı{s.watching ? "" : " · izlemiyorsun"}
+                      {s.self ? "Senin yayının" : `${s.name} ekranı${s.watching ? "" : " · izlemiyorsun"}`}
                     </button>
                   ))}
                 </div>
@@ -445,10 +473,10 @@ function InCall({
                       key={s.key}
                       source={{ ...s, stream: s.stream }}
                       hidden={s.key !== active.key}
-                      stats={showStats ? s.peer.stats : null}
+                      stats={showStats && s.peer ? s.peer.stats : null}
                       sinkId={speaker}
                       onFocus={() => enterFocus(`screen:${s.key}`)}
-                      onStopWatching={() => room.watch(s.key, false)}
+                      onStopWatching={s.self ? undefined : () => room.watch(s.key, false)}
                       ink={room.ink}
                     />
                   ) : (
@@ -727,7 +755,7 @@ function ScreenStage({
   stats: PeerStats | null;
   sinkId?: string;
   onFocus: () => void;
-  onStopWatching: () => void;
+  onStopWatching?: () => void;
   ink: Ink;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -740,6 +768,8 @@ function ScreenStage({
       <StreamVideo
         stream={source.stream}
         fit="contain"
+        // Kendi yayınının sesi sende çalmasın (yankı olur).
+        muted={!!source.self}
         sinkId={sinkId}
         videoRef={video}
         className="absolute inset-0 size-full"
@@ -748,17 +778,19 @@ function ScreenStage({
       <InkLayer ink={ink} owner={source.key} videoRef={video} drawing={drawing} />
       <div className="absolute left-2 top-2 h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5 pointer-events-none">
         <MonitorUp className="size-3.5 text-accent" />
-        {source.name} ekranı
+        {source.self ? "Senin yayının (karşı taraf böyle görüyor)" : `${source.name} ekranı`}
       </div>
       <div className="absolute right-2 bottom-2 flex gap-1.5">
-        <button
-          onClick={onStopWatching}
-          title="İzlemeyi bırak: görüntü sana gelmez, internetin ve işlemcin rahatlar"
-          className="h-9 px-2.5 rounded-lg bg-black/60 backdrop-blur flex items-center gap-1.5 text-xs opacity-80 hover:opacity-100"
-        >
-          <EyeOff className="size-4" />
-          <span className="hidden sm:inline">İzlemeyi bırak</span>
-        </button>
+        {onStopWatching && (
+          <button
+            onClick={onStopWatching}
+            title="İzlemeyi bırak: görüntü sana gelmez, internetin ve işlemcin rahatlar"
+            className="h-9 px-2.5 rounded-lg bg-black/60 backdrop-blur flex items-center gap-1.5 text-xs opacity-80 hover:opacity-100"
+          >
+            <EyeOff className="size-4" />
+            <span className="hidden sm:inline">İzlemeyi bırak</span>
+          </button>
+        )}
         <DrawButtons ink={ink} owner={source.key} drawing={drawing} onToggle={() => setDrawing(!drawing)} />
         <button
           onClick={onFocus}
@@ -1003,7 +1035,14 @@ function resolveFocus(focus: string | null, room: Room, remotes: RemoteView[], s
   if (kind === "screen") {
     const s = screens.find((x) => x.key === id);
     return s?.stream
-      ? { inkOwner: s.key, title: `${s.name} ekranı`, stream: s.stream, mirror: false, camOff: false, initial: "" }
+      ? {
+          inkOwner: s.key,
+          title: s.self ? "Senin yayının" : `${s.name} ekranı`,
+          stream: s.stream,
+          mirror: false,
+          camOff: false,
+          initial: "",
+        }
       : null;
   }
   if (id === "self")

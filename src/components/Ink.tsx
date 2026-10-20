@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { strokeAlpha, type Ink } from "@/lib/ink";
@@ -142,52 +142,46 @@ function SelfInkView({ ink, owner, stream }: { ink: Ink; owner: string; stream: 
 type PipApi = { requestWindow: (o: { width: number; height: number }) => Promise<Window> };
 const pipApi = () => (window as unknown as { documentPictureInPicture?: PipApi }).documentPictureInPicture;
 
-// Her zaman üstte duran küçük pencere (Chrome'un belge PiP'i): paylaşan kişi başka uygulamadayken de
-// çizimleri görür. Desteklenmeyen tarayıcıda sayfa içinde yüzen bir panel olarak açılır.
+// Her zaman üstte duran küçük pencereyi (Chrome'un belge PiP'i) aç. Doğrudan tıklama işleyicisinden
+// çağrılmalı: Chrome pencereyi yalnızca kullanıcı hareketinin içinde açar. Açılamazsa null döner
+// (çağıran sayfa içi panele düşer).
+export async function openInkWindow(onClosed: () => void): Promise<Window | null> {
+  const api = pipApi();
+  if (!api) return null;
+  try {
+    const w = await api.requestWindow({ width: 480, height: 300 });
+    // Sayfanın stillerini PiP penceresine taşı.
+    for (const node of document.head.querySelectorAll('style, link[rel="stylesheet"]'))
+      w.document.head.appendChild(node.cloneNode(true));
+    w.document.body.style.margin = "0";
+    w.document.body.style.background = "#000";
+    w.document.title = "Pencere: çizimler";
+    w.addEventListener("pagehide", onClosed, { once: true });
+    return w;
+  } catch (e) {
+    console.warn("çizim penceresi açılamadı", e);
+    return null;
+  }
+}
+
+// Paylaşan kişinin kendi ekranı + çizimler: PiP penceresinde ya da (açılamadıysa) sayfa içi yüzen panelde.
 export function SelfInkWindow({
   ink,
   owner,
   stream,
+  win,
   onClose,
 }: {
   ink: Ink;
   owner: string;
   stream: MediaStream;
+  win: Window | null;
   onClose: () => void;
 }) {
-  const [pip, setPip] = useState<Window | null>(null);
-  // PiP desteklenmiyorsa baştan sayfa içi panel.
-  const [fallback, setFallback] = useState(() => !pipApi());
-  const opened = useRef(false);
-  const winRef = useRef<Window | null>(null);
-
   // Bileşen kalkınca pencereyi de kapat.
-  useEffect(() => () => winRef.current?.close(), []);
+  useEffect(() => () => win?.close(), [win]);
 
-  useEffect(() => {
-    if (opened.current) return;
-    opened.current = true;
-    const api = pipApi();
-    if (!api) return;
-    // Bu bileşen bir düğmeye basınca kurulur: kullanıcı hareketi hâlâ geçerli.
-    api
-      .requestWindow({ width: 480, height: 300 })
-      .then((w) => {
-        winRef.current = w;
-        // Sayfanın stillerini PiP penceresine taşı.
-        for (const node of document.head.querySelectorAll('style, link[rel="stylesheet"]'))
-          w.document.head.appendChild(node.cloneNode(true));
-        w.document.body.style.margin = "0";
-        w.document.body.style.background = "#000";
-        w.document.title = "Pencere: çizimler";
-        w.addEventListener("pagehide", onClose, { once: true });
-        setPip(w);
-      })
-      .catch(() => setFallback(true));
-  }, [onClose]);
-
-  if (pip) return createPortal(<SelfInkView ink={ink} owner={owner} stream={stream} />, pip.document.body);
-  if (!fallback) return null;
+  if (win) return createPortal(<SelfInkView ink={ink} owner={owner} stream={stream} />, win.document.body);
   return (
     <div className="fixed z-40 left-3 bottom-24 w-[min(22rem,calc(100vw-1.5rem))] aspect-video rounded-xl overflow-hidden border border-line shadow-2xl shadow-black/60 bg-black">
       <SelfInkView ink={ink} owner={owner} stream={stream} />
