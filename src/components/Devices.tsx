@@ -159,7 +159,7 @@ export function DeviceMenu({
         aria-label={label}
         aria-expanded={open}
         title={label}
-        className="h-12 w-7 grid place-items-center text-muted hover:text-text"
+        className="h-11 sm:h-12 w-6 sm:w-7 grid place-items-center text-muted hover:text-text"
       >
         <ChevronUp className={`size-4 transition ${open ? "" : "rotate-180"}`} />
       </button>

@@ -14,6 +14,9 @@ type YTPlayer = {
   getCurrentTime(): number;
   getPlayerState(): number;
   getVideoData?(): { video_id?: string };
+  mute(): void;
+  unMute(): void;
+  isMuted(): boolean;
   destroy(): void;
 };
 type YTNamespace = {
@@ -68,7 +71,17 @@ function errorText(code: number) {
   return `Video oynatılamadı (hata ${code}).`;
 }
 
-export function YouTubeStage({ party, hidden, onStop }: { party: WatchParty; hidden: boolean; onStop: () => void }) {
+export function YouTubeStage({
+  party,
+  hidden,
+  silenced = false,
+  onStop,
+}: {
+  party: WatchParty;
+  hidden: boolean;
+  silenced?: boolean;
+  onStop: () => void;
+}) {
   const host = useRef<HTMLDivElement>(null);
   const player = useRef<YTPlayer | null>(null);
   const ready = useRef(false);
@@ -77,6 +90,27 @@ export function YouTubeStage({ party, hidden, onStop }: { party: WatchParty; hid
   const [error, setError] = useState<string | null>(null);
   const [needTap, setNeedTap] = useState(false);
   const videoId = party.state?.videoId ?? null;
+  const mutedByUs = useRef(false);
+
+  // Sesi kapat (sağırlaştır): oynatıcıyı sustur; sesi açınca yalnızca biz susturduysak geri aç.
+  useEffect(() => {
+    const apply = () => {
+      const p = player.current;
+      if (!p || !ready.current) return false;
+      if (silenced && !p.isMuted()) {
+        p.mute();
+        mutedByUs.current = true;
+      } else if (!silenced && mutedByUs.current) {
+        p.unMute();
+        mutedByUs.current = false;
+      }
+      return true;
+    };
+    if (apply()) return;
+    // Oynatıcı henüz hazır değilse hazır olunca uygula.
+    const t = setInterval(() => apply() && clearInterval(t), 300);
+    return () => clearInterval(t);
+  }, [silenced]);
 
   // Oynatıcıyı bir kez kur.
   useEffect(() => {

@@ -6,6 +6,8 @@ import {
   Activity,
   Check,
   Eraser,
+  HeadphoneOff,
+  Headphones,
   Eye,
   EyeOff,
   Link2,
@@ -259,6 +261,13 @@ function InCall({
         >
           {room.state.mic ? <Mic className="size-5" /> : <MicOff className="size-5" />}
         </SplitControl>
+        <RoundButton
+          active={!room.deafened}
+          onClick={() => void room.setDeafen(!room.deafened)}
+          label={room.deafened ? "Sesi aç" : "Sesi kapat (kimseyi duyma)"}
+        >
+          {room.deafened ? <HeadphoneOff className="size-5" /> : <Headphones className="size-5" />}
+        </RoundButton>
         <SplitControl
           active={room.state.cam}
           onClick={() => void room.setCam(!room.state.cam)}
@@ -324,7 +333,7 @@ function InCall({
           }}
           aria-label="Birlikte izle"
           title="YouTube'u birlikte izle"
-          className={`size-12 rounded-full grid place-items-center transition ${
+          className={`size-11 sm:size-12 rounded-full grid place-items-center transition ${
             ytOpen || room.party.state ? "bg-red-600 text-white" : "bg-panel-2 border border-line hover:border-muted/50"
           }`}
         >
@@ -334,7 +343,7 @@ function InCall({
           onClick={onLeave}
           aria-label="Ayrıl"
           title="Ayrıl"
-          className="h-12 px-5 rounded-full bg-danger text-white flex items-center gap-2 font-medium hover:brightness-110 transition"
+          className="h-11 sm:h-12 px-4 sm:px-5 rounded-full bg-danger text-white flex items-center gap-2 font-medium hover:brightness-110 transition"
         >
           <PhoneOff className="size-5" />
           <span className="hidden sm:inline">Ayrıl</span>
@@ -380,6 +389,7 @@ function InCall({
         videoKey={room.camStream.getVideoTracks()[0]?.id}
         onFocus={() => enterFocus("cam:self")}
         speaking={room.speaking.has("self")}
+        deaf={room.deafened}
       />
       {remotes.map((r) => (
         <CamTile
@@ -394,6 +404,8 @@ function InCall({
           sinkId={speaker}
           onFocus={() => enterFocus(`cam:${r.id}`)}
           speaking={room.speaking.has(r.id)}
+          deaf={!!r.state.deaf}
+          silenced={room.deafened}
         />
       ))}
     </>
@@ -514,7 +526,13 @@ function InCall({
                 {/* Seçili olmayan ekranlar da DOM'da kalır ki sesleri kesilmesin. */}
                 {screens.map((s) =>
                   s.yt ? (
-                    <YouTubeStage key="yt" party={room.party} hidden={s.key !== active.key} onStop={() => room.party.stop()} />
+                    <YouTubeStage
+                      key="yt"
+                      party={room.party}
+                      hidden={s.key !== active.key}
+                      silenced={room.deafened}
+                      onStop={() => room.party.stop()}
+                    />
                   ) : s.watching && s.stream ? (
                     <ScreenStage
                       key={s.key}
@@ -524,6 +542,7 @@ function InCall({
                       sinkId={speaker}
                       onFocus={() => enterFocus(`screen:${s.key}`)}
                       onStopWatching={s.self ? undefined : () => room.watch(s.key, false)}
+                      silenced={room.deafened}
                       ink={room.ink}
                     />
                   ) : (
@@ -558,6 +577,7 @@ function InCall({
               videoKey={room.camStream.getVideoTracks()[0]?.id}
               onFocus={() => enterFocus("cam:self")}
               speaking={room.speaking.has("self")}
+        deaf={room.deafened}
               variant={swapped ? "main" : "pip"}
               className={swapped ? "inset-0" : pipClass}
               boxProps={swapped ? undefined : pipProps}
@@ -574,6 +594,8 @@ function InCall({
               sinkId={speaker}
               onFocus={() => enterFocus(`cam:${one.id}`)}
               speaking={room.speaking.has(one.id)}
+              deaf={!!one.state.deaf}
+              silenced={room.deafened}
               variant={swapped ? "pip" : "main"}
               className={swapped ? pipClass : "inset-0"}
               boxProps={swapped ? pipProps : undefined}
@@ -587,7 +609,7 @@ function InCall({
         )}
       </main>
 
-      <footer className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center justify-center gap-2">
+      <footer className="shrink-0 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex items-center justify-center gap-1.5 sm:gap-2">
         {controls}
       </footer>
     </div>
@@ -631,7 +653,12 @@ function RoundButton({
       ? "bg-panel-2 border border-line hover:border-muted/50"
       : "bg-danger/15 border border-danger/30 text-red-300";
   return (
-    <button onClick={onClick} aria-label={label} title={label} className={`size-12 rounded-full grid place-items-center transition ${cls}`}>
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={`size-11 sm:size-12 rounded-full grid place-items-center transition ${cls}`}
+    >
       {children}
     </button>
   );
@@ -662,7 +689,7 @@ function SplitControl({
         onClick={onClick}
         aria-label={label}
         title={label}
-        className={`size-12 -my-px -mr-px rounded-full grid place-items-center transition ${
+        className={`size-11 sm:size-12 -my-px -mr-px rounded-full grid place-items-center transition ${
           active ? "bg-white/5 hover:bg-white/10" : "bg-danger text-white"
         }`}
       >
@@ -695,6 +722,8 @@ function CamTile({
   className = "",
   boxProps,
   speaking = false,
+  deaf = false,
+  silenced = false,
 }: {
   name: string;
   stream: MediaStream | null;
@@ -710,6 +739,8 @@ function CamTile({
   trackId?: string;
   variant?: "grid" | "main" | "pip";
   speaking?: boolean;
+  deaf?: boolean; // bu kişi sesi kapattı (kimseyi duymuyor)
+  silenced?: boolean; // ben sesi kapattım: bu kutunun sesi çalmasın
   className?: string;
   boxProps?: React.HTMLAttributes<HTMLDivElement>;
 }) {
@@ -736,7 +767,7 @@ function CamTile({
       <StreamVideo
         key={videoKey}
         stream={stream}
-        muted={self}
+        muted={self || silenced}
         mirror={self && mirror}
         sinkId={sinkId}
         videoRef={video}
@@ -756,15 +787,21 @@ function CamTile({
         </div>
       )}
       {pip ? (
-        !mic && (
-          <div className="absolute left-1.5 bottom-1.5 size-6 rounded-full bg-black/60 grid place-items-center pointer-events-none">
-            <MicOff className="size-3.5 text-red-300" />
+        (deaf || !mic) && (
+          <div className="absolute left-1.5 bottom-1.5 h-6 px-1.5 rounded-full bg-black/60 flex items-center gap-1 pointer-events-none">
+            {deaf && <HeadphoneOff className="size-3.5 text-red-300" />}
+            {!mic && <MicOff className="size-3.5 text-red-300" />}
           </div>
         )
       ) : (
         <div className="absolute left-2 bottom-2 max-w-[calc(100%-1rem)] h-7 px-2.5 rounded-lg bg-black/60 backdrop-blur text-xs flex items-center gap-1.5 pointer-events-none">
-          {!mic && <MicOff className="size-3.5 text-red-300 shrink-0" />}
+          {deaf ? (
+            <HeadphoneOff className="size-3.5 text-red-300 shrink-0" />
+          ) : (
+            !mic && <MicOff className="size-3.5 text-red-300 shrink-0" />
+          )}
           <span className="truncate">{name}</span>
+          {deaf && <span className="text-red-300 shrink-0">· duymuyor</span>}
           {connecting && <span className="text-muted shrink-0">· {connLabel(conn)}</span>}
         </div>
       )}
@@ -796,8 +833,10 @@ function ScreenStage({
   onFocus,
   onStopWatching,
   ink,
+  silenced = false,
 }: {
   source: ScreenSource & { stream: MediaStream };
+  silenced?: boolean;
   hidden: boolean;
   stats: PeerStats | null;
   sinkId?: string;
@@ -816,7 +855,7 @@ function ScreenStage({
         stream={source.stream}
         fit="contain"
         // Kendi yayınının sesi sende çalmasın (yankı olur).
-        muted={!!source.self}
+        muted={!!source.self || silenced}
         sinkId={sinkId}
         videoRef={video}
         className="absolute inset-0 size-full"

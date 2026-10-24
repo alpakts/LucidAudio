@@ -19,6 +19,8 @@ export type PeerState = {
   camStream: string | null;
   screenStream: string | null;
   screenMode: ShareMode | null;
+  // Sesi kapattı (Discord'daki sağırlaştır): kimseyi duymuyor, mikrofonu da kapalı.
+  deaf?: boolean;
 };
 
 export type TrackStats = { width: number; height: number; fps: number; kbps: number };
@@ -179,7 +181,7 @@ export class Room {
       (id) => (this.remotes.get(id)?.stats?.rttMs ?? 120) / 2000,
       () => this.emit(),
     );
-    this.state = { name, mic: false, cam: false, camStream: this.camStream.id, screenStream: null, screenMode: null };
+    this.state = { name, mic: false, cam: false, camStream: this.camStream.id, screenStream: null, screenMode: null, deaf: false };
   }
 
   // ---------- React bağlantısı ----------
@@ -441,7 +443,7 @@ export class Room {
   }
 
   private sound(kind: SoundKind) {
-    playSound(kind, { enabled: this.soundsOn, sinkId: this.devices.speaker });
+    playSound(kind, { enabled: this.soundsOn && !this.deafened, sinkId: this.devices.speaker });
   }
 
   // ---------- bağlantılar ----------
@@ -614,7 +616,30 @@ export class Room {
     return this.camSenders.has(tr.sender);
   }
 
+  // Sesi kapat / aç (Discord gibi): kapatınca mikrofon da kapanır; açınca mikrofon önceki haline döner.
+  private micBeforeDeaf = false;
+
+  get deafened() {
+    return !!this.state.deaf;
+  }
+
+  async setDeafen(on: boolean) {
+    if (on === this.deafened) return;
+    if (on) {
+      this.micBeforeDeaf = this.state.mic;
+      this.state = { ...this.state, deaf: true };
+      if (this.state.mic) await this.setMic(false);
+      else this.broadcastState();
+    } else {
+      this.state = { ...this.state, deaf: false };
+      if (this.micBeforeDeaf) await this.setMic(true);
+      else this.broadcastState();
+    }
+  }
+
   async setMic(on: boolean) {
+    // Sesi kapalıyken mikrofonu açmak sesi de açar (Discord'daki gibi).
+    if (on && this.deafened) this.state = { ...this.state, deaf: false };
     const cur = this.camStream.getAudioTracks()[0];
     if (cur) {
       cur.enabled = on;
