@@ -132,8 +132,13 @@ export async function getLocalMedia(mic: boolean, cam: boolean): Promise<{ strea
     }
   } catch (e) {
     const name = (e as Error).name;
-    // Kamera yok ya da meşgulse en azından sesle katılabilsin.
-    if (mic && cam && ["NotFoundError", "NotReadableError", "OverconstrainedError", "AbortError"].includes(name)) {
+    // Kamera yok, meşgul ya da izni verilmemişse en azından sesle katılabilsin
+    // (tarayıcı ikisini birlikte isteyince biri reddedilse ikisini de reddediyor).
+    if (
+      mic &&
+      cam &&
+      ["NotFoundError", "NotReadableError", "OverconstrainedError", "AbortError", "NotAllowedError"].includes(name)
+    ) {
       try {
         const track = await acquireTrack("audio", prefs.mic);
         return { stream: new MediaStream([track]), error: mediaErrorText(e, "kamera") };

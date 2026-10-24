@@ -74,6 +74,10 @@ export function Lobby({
   }, [code]);
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
+  // Bu cihazda hiç kamera yoksa kamera kapalı başlar.
+  const [noCam, setNoCam] = useState(false);
+  // İzin bir kez istendi mi: ikinci "Katıl" artık sormadan, elde ne varsa onunla girer.
+  const asked = useRef(false);
   const [preview, setPreview] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -97,12 +101,30 @@ export function Lobby({
     bump();
   };
 
+  // Kamera var mı? (Cihaz sayısı izin olmadan da görünür, adları görünmez.)
+  useEffect(() => {
+    let alive = true;
+    void navigator.mediaDevices
+      ?.enumerateDevices?.()
+      .then((list) => {
+        if (alive && !list.some((d) => d.kind === "videoinput")) {
+          setNoCam(true);
+          setCam(false);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Daha önce izin verildiyse önizlemeyi kendiliğinden aç; verilmediyse kullanıcı dokunana kadar bekle.
   useEffect(() => {
     let alive = true;
     void permissionsGranted().then(async (ok) => {
       if (!ok || !alive || previewRef.current) return;
-      const res = await getLocalMedia(true, true);
+      const hasCam = (await navigator.mediaDevices.enumerateDevices().catch(() => [])).some((d) => d.kind === "videoinput");
+      const res = await getLocalMedia(true, hasCam);
       if (!alive) {
         for (const t of res.stream?.getTracks() ?? []) t.stop();
         return;
@@ -191,10 +213,13 @@ export function Lobby({
     } catch {}
     let stream = previewRef.current;
     // İzin henüz istenmediyse şimdi iste: Katıl'a dokunuşun hemen ardından (başka beklemeden önce).
-    if (!stream && (mic || cam)) {
+    // Kamera olmadı ama mikrofon geldiyse beklemeden sesle gir. Hiçbir şey gelmediyse uyarıyı göster;
+    // ikinci basışta kamerasız ve mikrofonsuz gir (izin vermeyen de odaya girip izleyebilsin).
+    if (!stream && (mic || cam) && !asked.current) {
+      asked.current = true;
       const res = await askPermission();
-      if (res.error) return;
       stream = res.stream;
+      if (!stream) return;
     }
     setGateError(null);
     const g: Gate = await roomApi(code, { t: "info" }).catch(() => gate ?? { locked: false, password: false });
@@ -234,7 +259,9 @@ export function Lobby({
               />
             ) : (
               <div className="absolute inset-0 grid place-items-center p-6 pb-24 text-center">
-                {preview || !cam ? (
+                {noCam ? (
+                  <p className="text-muted text-sm">Bu cihazda kamera bulunamadı, sesle katılacaksın.</p>
+                ) : preview || !cam ? (
                   <p className="text-muted">Kamera kapalı</p>
                 ) : (
                   <div>
