@@ -46,6 +46,7 @@ import { DeviceMenu, useDevices } from "./Devices";
 export function Call({ code }: { code: string }) {
   const [room, setRoom] = useState<Room | null>(null);
   const [left, setLeft] = useState(false);
+  const [leftNote, setLeftNote] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => () => room?.leave(), [room]);
@@ -54,8 +55,15 @@ export function Call({ code }: { code: string }) {
     return (
       <Centered>
         <p className="text-lg font-medium">Görüşmeden çıktın</p>
+        {leftNote && <p className="text-sm text-muted mt-2 max-w-sm">{leftNote}</p>}
         <div className="flex gap-2 mt-5">
-          <button onClick={() => setLeft(false)} className="h-11 px-5 rounded-xl bg-accent text-accent-ink font-medium">
+          <button
+            onClick={() => {
+              setLeft(false);
+              setLeftNote(null);
+            }}
+            className="h-11 px-5 rounded-xl bg-accent text-accent-ink font-medium"
+          >
             Tekrar katıl
           </button>
           <Link href="/" className="h-11 px-5 rounded-xl bg-panel-2 border border-line grid place-items-center">
@@ -91,6 +99,11 @@ export function Call({ code }: { code: string }) {
         setRoom(null);
         setNotice(reason === "sifre" ? "Şifre yanlış ya da değiştirildi." : "Oda kilitlendi, şu an yeni kimse giremiyor.");
       }}
+      onIdle={() => {
+        setRoom(null);
+        setLeftNote("Odada 15 dakika tek başına kaldın ve sekme arka plandaydı, bu yüzden bağlantı kapatıldı.");
+        setLeft(true);
+      }}
     />
   );
 }
@@ -116,16 +129,22 @@ function InCall({
   room,
   onLeave,
   onDenied,
+  onIdle,
 }: {
   room: Room;
   onLeave: () => void;
   onDenied: (reason: "sifre" | "kilitli") => void;
+  onIdle: () => void;
 }) {
   useSyncExternalStore(room.subscribe, room.getVersion, room.getVersion);
   const denied = room.denied;
   useEffect(() => {
     if (denied) onDenied(denied);
   }, [denied, onDenied]);
+  const idle = room.idleLeft;
+  useEffect(() => {
+    if (idle) onIdle();
+  }, [idle, onIdle]);
   const remotes = room.remoteViews();
   const [showStats, setShowStats] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);

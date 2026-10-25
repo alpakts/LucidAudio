@@ -1,5 +1,5 @@
 // Sinyal kutusu: oda katılımcıları, aralarındaki kısa ömürlü mesajlar ve oda ayarları (kilit, şifre).
-// DATABASE_URL varsa Neon Postgres, yoksa (yerel geliştirme) bellek içi.
+// Canlıda Neon Postgres, yerel geliştirmede bellek içi (bkz. getStore).
 
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { neon } from "@neondatabase/serverless";
@@ -246,6 +246,10 @@ function neonStore(url: string): Store {
 
 let store: Store | null = null;
 export function getStore(): Store {
-  const url = process.env.DATABASE_URL;
+  // Canlıda sinyal veritabanı (SIG_), yoksa eski DATABASE_URL.
+  // Yerel geliştirme ve testler canlı veritabanına DOKUNMAZ: Neon'un ücretsiz planı uyanık kalınan
+  // süreyi sayıyor, uzun testler kotayı bitirmişti. Bilerek denemek için USE_REMOTE_DB=1.
+  const remote = process.env.NODE_ENV === "production" || process.env.USE_REMOTE_DB === "1";
+  const url = remote ? (process.env.SIG_DATABASE_URL ?? process.env.DATABASE_URL) : undefined;
   return (store ??= url ? neonStore(url) : memoryStore());
 }

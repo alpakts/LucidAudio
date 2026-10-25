@@ -99,6 +99,9 @@ const MAX_BUFFER = 4 * 1024 * 1024;
 export const MAX_FILE = 2 * 1024 * 1024 * 1024;
 
 const POLL_MS = 700;
+// Odada tek başına ve sekme arka planda bu kadar kalınca odadan çıkılır: unutulan sekme
+// sunucuyu (ve veritabanının uyanık kalma kotasını) gece boyu meşgul etmesin.
+const IDLE_ALONE_MS = 15 * 60_000;
 const SPEAK_POLL_MS = 120;
 const SPEAK_HOLD_MS = 350;
 // Konuşma eşiği (doğrusal 0..1). Sessiz oda ~0.005, normal konuşma 0.05+.
@@ -157,6 +160,9 @@ export class Room {
   // Oda ayarları (sunucudan her yoklamada gelir) ve girişin reddedilme sebebi.
   room: { locked: boolean; password: boolean } = { locked: false, password: false };
   denied: "sifre" | "kilitli" | null = null;
+  // Tek başına unutulduğu için odadan çıkıldı.
+  idleLeft = false;
+  private aloneHiddenSince: number | null = null;
   // Paylaşılan ekranlar üzerine çizim (veri kanalından).
   readonly ink: Ink;
   // Senkron YouTube (veri kanalından).
@@ -307,7 +313,28 @@ export class Room {
 
   // Gönderimleri sıraya koy: açıklama, ondan sonra üretilen ICE adaylarından önce ulaşsın.
   private signal(to: string, body: Body) {
+    // Doğrudan veri kanalı açıksa sunucuya hiç uğrama (hızlı, sunucuyu ve veritabanını yormaz).
+    const viaDc = (r: Remote) => r.dc.send(JSON.stringify({ t: "sig", body }));
+    if (to !== "*") {
+      const r = this.remotes.get(to);
+      if (r?.dc.readyState === "open") return viaDc(r);
+    } else {
+      const all = [...this.remotes.values()];
+      const open = all.filter((r) => r.dc.readyState === "open");
+      for (const r of open) viaDc(r);
+      // Kanalı henüz açılmamış biri yoksa sunucuya gerek yok (yeni gelen durumu zaten ayrıca alır).
+      if (open.length === all.length) return;
+    }
     this.sendChain = this.sendChain.then(() => this.api({ t: "send", to, body }).catch((e) => console.warn(e)));
+  }
+
+  // Yoklama aralığı: bağlanırken sık, herkes bağlıyken seyrek (yalnızca yeni gelen ve ayrılan için).
+  private pollDelay() {
+    if (this.failures) return 2000;
+    const all = [...this.remotes.values()];
+    if (all.length === 0) return 2000;
+    const settled = all.every((r) => r.dc.readyState === "open" && r.pc.connectionState === "connected");
+    return settled ? 4000 : POLL_MS;
   }
 
   private async poll() {
@@ -333,6 +360,14 @@ export class Room {
       if (res.last !== null) this.after = this.floor = res.last;
       const firstPoll = !this.joined;
       this.syncPeers(res.peers);
+      if (this.remotes.size === 0 && document.hidden) {
+        this.aloneHiddenSince ??= Date.now();
+        if (Date.now() - this.aloneHiddenSince > IDLE_ALONE_MS) {
+          this.idleLeft = true;
+          this.leave();
+          return;
+        }
+      } else this.aloneHiddenSince = null;
       if (firstPoll) {
         // İlk yoklamada gelenler zaten odadaydı: onlar için değil, kendin için bir giriş sesi.
         this.joined = true;
@@ -361,7 +396,7 @@ export class Room {
         this.emit();
       }
     }
-    this.pollTimer = setTimeout(() => void this.poll(), this.failures ? 2000 : POLL_MS);
+    this.pollTimer = setTimeout(() => void this.poll(), this.pollDelay());
   }
 
   private syncPeers(peers: { id: string; name: string }[]) {
@@ -1233,6 +1268,9 @@ export class Room {
       const item = this.chat.find((c) => c.id === inc.id);
       const blob = new Blob(inc.chunks, { type: item?.file?.mime || "application/octet-stream" });
       this.updateFile(inc.id, { url: URL.createObjectURL(blob), progress: 1 });
+    } else if (msg.t === "sig") {
+      // Veri kanalından gelen sinyal: sunucudan gelmiş gibi işle.
+      this.onMessage(r.id, (msg as unknown as { body: Body }).body);
     } else if (msg.t === "yt") {
       this.party.receive(r.id, msg as PartyMsg);
     } else if (msg.t === "ink" || msg.t === "ink-clear") {
